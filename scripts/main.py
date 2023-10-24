@@ -6,9 +6,9 @@ from hedonic import community_hedonic
 #################################################
 
 # Parameters
-community_size = 10 # Define block sizes
-p_in = .5
-multiplier = .5
+community_size = 500 # Define block sizes
+p_in = .1
+multiplier = .25
 
 #################################################
 
@@ -23,20 +23,46 @@ def ppm_igraph(community_size, p_in, multiplier):
     p_out = p_in * multiplier
     p = probs_matrix(len(block_sizes), p_in, p_out)
     h = SBM(block_sizes, p)
-    # convert to igraph
-    g = ig.Graph.TupleList(h.edges())
+    g = ig.Graph.TupleList(h.edges()) # convert to igraph
     return g
+
+def cap_n_communities(g, partition, max_n_comm=2):
+    new_partition = None
+    if len(partition.sizes()) > max_n_comm:
+        new_membership = [m if (
+            m < max_n_comm
+        ) else (max_n_comm - 1) for m in partition.membership]
+        new_partition = ig.clustering.VertexClustering(g, new_membership)
+    return new_partition if new_partition else partition
+
+def accuracy(partition, ground_truth):
+    n_correct = 0
+    for i in range(partition.n):
+        for j in range(partition.n):
+            pair_ij = partition.membership[i] == partition.membership[j]
+            pair_gt = ground_truth.membership[i] == ground_truth.membership[j]
+            if pair_ij == pair_gt:
+                n_correct += 1
+    acc = n_correct / partition.n ** 2
+    return (acc - .5) / .5
 
 #################################################
 
 g = ppm_igraph(community_size, p_in, multiplier)
-# print(g.summary()) # Print the graph summary
 
 # Get the communities
 comms_ml = g.community_multilevel()
-comms_ld = g.community_leiden()
+comms_ld = g.community_leiden(resolution=g.density())
+comms_hd = community_hedonic(g)
 
-# Print the communities
-print('community multilevel: \n', comms_ml)
-print('community leiden: \n', comms_ld)
-print('community hedonic: \n', community_hedonic(g))
+cap_comms_ml = cap_n_communities(g, comms_ml)
+cap_comms_ld = cap_n_communities(g, comms_ld)
+
+gt_membership = np.concatenate(
+    (np.zeros(community_size), np.ones(community_size)))
+ground_truth = ig.clustering.VertexClustering(g, gt_membership)
+
+# Print the accuracy of the methods
+print('community multilevel acc: ', accuracy(cap_comms_ml, ground_truth))
+print('community leiden acc: ', accuracy(cap_comms_ld, ground_truth))
+print('community hedonic acc: ', accuracy(comms_hd, ground_truth))
