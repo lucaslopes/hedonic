@@ -1,2 +1,3 @@
-def community_hedonic():
-    return 'community_hedonic'
+def community_hedonic(g):
+    membership = [0] * g.vcount()
+    return membership
