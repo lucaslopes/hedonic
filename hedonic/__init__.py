@@ -1,1 +1,1 @@
-from .community import community_hedonic
+from .game import HedonicGame
