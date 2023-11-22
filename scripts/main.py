@@ -80,7 +80,7 @@ def run_experiment(
         for mult in multipliers:
             for method in methods:
                 samples = []
-                while len(samples) < 10:
+                while len(samples) < 5:
                     g = ppm_igraph(number_of_communities, community_size, p_in, mult)
                     ground_truth = ig.clustering.VertexClustering(g, gt_membership)
                     res = 1 if method == 'community_multilevel' else g.density()
@@ -120,7 +120,7 @@ def plot_heatmaps(df):
 
 #################################################
 
-df = run_experiment(2,50)
+df = run_experiment(6,100)
 fig, axes = plot_heatmaps(df)
 plt.tight_layout()
 plt.show()
