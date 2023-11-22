@@ -8,9 +8,6 @@ from hedonic import HedonicGame
 
 #################################################
 
-def networkx_to_hedonic_game(g):
-    return HedonicGame(g.number_of_nodes(), g.edges())
-
 def probs_matrix(n_communities, p, q):
     probs = np.full((n_communities, n_communities), q) # fill with q
     np.fill_diagonal(probs, p) # fill diagonal with p
@@ -20,9 +17,9 @@ def ppm_igraph(n_communities, community_size, p_in, multiplier):
     block_sizes = np.full(n_communities, community_size) # all blocks are same size
     p_out = p_in * multiplier # probability of edge between communities
     p = probs_matrix(n_communities, p_in, p_out) # probability matrix
-    h = SBM(block_sizes, p) # generate networkx graph
-    g = networkx_to_hedonic_game(h) # convert to HedonicGame (igraph subclass)
-    return g # return igraph graph
+    g = SBM(block_sizes, p) # generate networkx graph
+    h = HedonicGame(g.number_of_nodes(), g.edges()) # convert to HedonicGame (igraph subclass)
+    return h # return igraph graph
 
 def cap_n_communities(g, partition, max_n_comm):
     new_partition = None
@@ -115,17 +112,15 @@ def plot_heatmaps(df):
     for i, method in enumerate(methods):
         method_df = df[df["method"] == method]
         method_data = method_df.pivot_table(index="p_in", columns="multiplier", values="accuracy")
-        
         ax = sns.heatmap(method_data, ax=axes[i], cmap="Greens", vmin=0, vmax=1) # , annot=True, fmt=".2f",
         ax.set_title(method)
         ax.set_xlabel("multiplier")
         ax.set_ylabel("p_in")
-    
     return fig, axes
 
 #################################################
 
-df = run_experiment(7)
+df = run_experiment(2,50)
 fig, axes = plot_heatmaps(df)
 plt.tight_layout()
 plt.show()
