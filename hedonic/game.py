@@ -86,3 +86,66 @@ class HedonicGame(ig.Graph):
           a_node_has_moved = True
     membership = [int(node['community']) for node in self.vs]
     return ig.clustering.VertexClustering(self, membership)
+  
+  ## statistics #################################
+
+  def accuracy(self, partition, ground_truth):
+    n_correct = 0
+    for i in range(partition.n):
+      for j in range(partition.n):
+        pair_ij = partition.membership[i] == partition.membership[j]
+        pair_gt = ground_truth.membership[i] == ground_truth.membership[j]
+        if pair_ij == pair_gt:
+          n_correct += 1
+    acc = n_correct / partition.n ** 2
+    return (acc - .5) / .5
+  
+  def potential(self): # need to verify
+    global_potential = 0
+    for community in list(self['communities_nodes']):
+      global_potential += self.potential_of_community(community)
+    return global_potential
+  
+  def robustness(self, resolution=10): # need to verify
+    return('#todo')
+
+  ## need to verify #############################
+
+  def potential_of_community(self, community, alpha=None):
+    connections = self['communities_edges'][community]
+    missed_connections = self.total_possible_edges(len(self['communities_nodes'][community])) - connections
+    return self.hedonic_value(connections, missed_connections, alpha)
+
+  def edges_between(self, community_A, community_B):
+    bridges = 0
+    for node in self['communities_nodes'][community_A]:
+      bridges += self.vs[node]['friends_in_community'][community_B]
+    return bridges
+
+  def potential_merged(self, community_A, community_B, alpha=None):
+    total_verts = len(self['communities_nodes'][community_A]) + len(self['communities_nodes'][community_B])
+    connections = self['communities_edges'][community_A] + self['communities_edges'][community_B] + self.edges_between(community_A, community_B)
+    missed_connections = self.total_possible_edges(total_verts) - connections
+    return self.hedonic_value(connections, missed_connections, alpha)
+
+  def worthy_merge(self, community_A, community_B, alpha=None):
+    potential_A = self.potential_of_community(community_A)
+    potential_B = self.potential_of_community(community_B)
+    potential_together = self.potential_merged(community_A, community_B, alpha)
+    return potential_together > potential_A + potential_B
+
+  def find_a_pair_of_communities_to_merge(self):
+    communities_list = list(self['communities_nodes'])
+    for community in communities_list:
+      random.shuffle(communities_list)
+      for other_community in communities_list:
+        if other_community != community and self.worthy_merge(community, other_community):
+          return community, other_community
+    return None, None
+
+  def merge_two_communities(self, C1, C2):
+    smaller_community = C1 if len(self['communities_nodes'][C1]) < len(self['communities_nodes'][C2]) else C2
+    greater_community = C2 if smaller_community == C1 else C1
+    nodes_to_move = list(self['communities_nodes'][smaller_community])
+    for node in nodes_to_move:
+      self.move_node_to_community(self.vs[node], greater_community)
