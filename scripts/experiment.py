@@ -58,7 +58,8 @@ def get_method_result(
   duration = time() - start_time # end timer
   partition = limit_community_count(g, partition, number_of_communities) # limit community count
   gt = get_ground_truth(g, community_size) # get ground truth
-  accuracy = g.accuracy(partition, gt) # calculate accuracy
+  accuracy = g.accuracy(partition, gt) # calculate accuracy wrt the ground truth
+  robustness = g.robustness(partition) # calculate fraction of nodes that are robust wrt the resolution parameter (i.e. they do not change community when the resolution parameter is changed)
   result = {
     'method': method_name.split("_")[1],
     'number_of_communities': number_of_communities,
@@ -68,7 +69,8 @@ def get_method_result(
     'multiplier': multiplier,
     'resolution': method_params['resolution'],
     'duration': duration,
-    'accuracy': accuracy,}
+    'accuracy': accuracy,
+    'robustness': robustness,}
   return result
 
 def run_experiment(
@@ -84,7 +86,8 @@ def run_experiment(
       initial_membership = [choice(range(number_of_communities)) for _ in g.vs]
       edge_density = g.density()
       for method, params in tqdm(methods.items(), desc='method', leave=False):
-        params['resolution'] = edge_density
+        if method != 'community_multilevel':
+          params['resolution'] = edge_density
         if 'initial_membership' in params:
           params['initial_membership'] = initial_membership
         result = get_method_result(

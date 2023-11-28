@@ -1,6 +1,8 @@
 import random
 import igraph as ig
 
+#################################################
+
 class HedonicGame(ig.Graph):
   def __init__(self, *args, **kwargs):
     super().__init__(*args, **kwargs)
@@ -9,19 +11,12 @@ class HedonicGame(ig.Graph):
     pros = neighbors * (1-resolution) # prosocial value
     cons = strangers *    resolution # antisocial value
     return pros - cons # hedonic value
-  
-  def initial_membership(self, max_communitites=0):
-    if max_communitites < 1:
-      membership = [node.index for node in self.vs] # all nodes are isolated
-    else:
-      membership = [random.choice(range(max_communitites)) for _ in self.vs]
-    return membership
 
-  def initialize_game(self, max_communities):
+  def initialize_game(self, initial_membership):
     self['communities_nodes'] = dict() # communities are sets of nodes
     self['communities_edges'] = dict() # communities are count of internal edges
-    initial_state = self.initial_membership(max_communities)
-    for node, community in zip(self.vs, initial_state):
+    initial_membership = initial_membership if initial_membership else [node.index for node in self.vs]
+    for node, community in zip(self.vs, initial_membership):
       self.vs[node.index]['community'] = community
       try:
         self['communities_nodes'][community].add(node.index)
@@ -74,8 +69,8 @@ class HedonicGame(ig.Graph):
     if len(self['communities_nodes'][derparture]) == 0: # if community is empty
       del self['communities_nodes'][derparture] # this community no longer exist
 
-  def community_hedonic(self, resolution=1, max_communities=2):
-    self.initialize_game(max_communities)
+  def community_hedonic(self, resolution=1, initial_membership=None):
+    self.initialize_game(initial_membership)
     a_node_has_moved = True
     while a_node_has_moved:
       a_node_has_moved = False
@@ -100,16 +95,23 @@ class HedonicGame(ig.Graph):
     acc = n_correct / partition.n ** 2
     return (acc - .5) / .5
   
+  def robustness(self, partition):
+    self.initialize_game(partition.membership)
+    robust_nodes = []
+    for node in self.vs:
+      pref_comm_0 = self.get_preferable_community(node, 0)
+      pref_comm_1 = self.get_preferable_community(node, 1)
+      robust_nodes.append(
+        pref_comm_0 == pref_comm_1 == node['community'])
+    return robust_nodes.count(True) / len(robust_nodes)
+
+  ## need to verify #############################
+
   def potential(self): # need to verify
     global_potential = 0
     for community in list(self['communities_nodes']):
       global_potential += self.potential_of_community(community)
     return global_potential
-  
-  def robustness(self, resolution=10): # need to verify
-    return('#todo')
-
-  ## need to verify #############################
 
   def potential_of_community(self, community, alpha=None):
     connections = self['communities_edges'][community]

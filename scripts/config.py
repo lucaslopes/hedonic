@@ -1,7 +1,7 @@
 experiment_params = {
   'samples': 10,
   'number_of_communities': 2,
-  'community_size': 100,
+  'community_size': 150,
   'probabilities': [1, .5, .25, .1, .05, .025, .01],
   'output_results_path': '~/Databases/hedonic',
 }
@@ -20,10 +20,10 @@ methods = {
     # 'normalize_resolution': False, # if set to true, the resolution parameter will be divided by the sum of the node weights. If this is not supplied, it will default to the node degree, or weighted degree in case edge_weights are supplied.
     'beta': 0.01, # 	parameter affecting the randomness in the Leiden algorithm. This affects only the refinement step of the algorithm.
     'initial_membership': None, # if provided, the Leiden algorithm will try to improve this provided membership. If no argument is provided, the aglorithm simply starts from the singleton partition.
-    'n_iterations': 100, # the number of iterations to iterate the Leiden algorithm. Each iteration may improve the partition further. You can also set this parameter to a negative number, which means that the algorithm will be iterated until an iteration does not change the current membership vector any more.
+    'n_iterations': 10, # the number of iterations to iterate the Leiden algorithm. Each iteration may improve the partition further. You can also set this parameter to a negative number, which means that the algorithm will be iterated until an iteration does not change the current membership vector any more.
   },
   'community_hedonic' : {
     'resolution': 1,
-    'max_communities': 2,
+    'initial_membership': None,
   }
 }
