@@ -1,4 +1,3 @@
-import random
 import igraph as ig
 
 #################################################
@@ -69,7 +68,11 @@ class HedonicGame(ig.Graph):
     if len(self['communities_nodes'][derparture]) == 0: # if community is empty
       del self['communities_nodes'][derparture] # this community no longer exist
 
-  def community_hedonic(self, resolution=1, initial_membership=None):
+  def membership(self):
+    return [int(node['community']) for node in self.vs]
+
+  def community_hedonic(self, resolution=1, initial_membership=None, log_memberships=False):
+    self['log_memberships'] = []
     self.initialize_game(initial_membership)
     a_node_has_moved = True
     while a_node_has_moved:
@@ -79,8 +82,9 @@ class HedonicGame(ig.Graph):
         if pref_comm != node['community']:
           self.move_node_to_community(node, pref_comm)
           a_node_has_moved = True
-    membership = [int(node['community']) for node in self.vs]
-    return ig.clustering.VertexClustering(self, membership)
+          if log_memberships:
+            self['log_memberships'].append(self.membership())
+    return ig.clustering.VertexClustering(self, self.membership())
   
   ## statistics #################################
 
@@ -96,14 +100,21 @@ class HedonicGame(ig.Graph):
     return (acc - .5) / .5
   
   def robustness(self, partition):
+    """Calculate fraction of nodes that are robust wrt the resolution parameter (i.e. they do not change community when the resolution parameter is changed)
+    """
     self.initialize_game(partition.membership)
-    robust_nodes = []
+    if len(self['communities_nodes']) == 1:
+      return 0
+    is_robust_node = []
     for node in self.vs:
-      pref_comm_0 = self.get_preferable_community(node, 0)
-      pref_comm_1 = self.get_preferable_community(node, 1)
-      robust_nodes.append(
-        pref_comm_0 == pref_comm_1 == node['community'])
-    return robust_nodes.count(True) / len(robust_nodes)
+      # hedonic_value_res0 = self.value_of_node_in_community(node, node['community'], 0)
+      # hedonic_value_res1 = self.value_of_node_in_community(node, node['community'], 1)
+      # better_than_isolated = hedonic_value_res0 > 0 and hedonic_value_res1 > 0
+      pref_comm_res0 = self.get_preferable_community(node, 0)
+      pref_comm_res1 = self.get_preferable_community(node, 1)
+      on_best_community = pref_comm_res0 == pref_comm_res1 == node['community']
+      is_robust_node.append(on_best_community)
+    return is_robust_node.count(True) / len(is_robust_node)
 
   ## need to verify #############################
 
@@ -139,7 +150,7 @@ class HedonicGame(ig.Graph):
   def find_a_pair_of_communities_to_merge(self):
     communities_list = list(self['communities_nodes'])
     for community in communities_list:
-      random.shuffle(communities_list)
+      # random.shuffle(communities_list)
       for other_community in communities_list:
         if other_community != community and self.worthy_merge(community, other_community):
           return community, other_community
