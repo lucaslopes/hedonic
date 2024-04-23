@@ -89,32 +89,36 @@ class HedonicGame(ig.Graph):
   ## statistics #################################
 
   def accuracy(self, partition, ground_truth):
-    n_correct = 0
-    for i in range(partition.n):
-      for j in range(partition.n):
-        pair_ij = partition.membership[i] == partition.membership[j]
-        pair_gt = ground_truth.membership[i] == ground_truth.membership[j]
-        if pair_ij == pair_gt:
-          n_correct += 1
-    acc = n_correct / partition.n ** 2
-    return (acc - .5) / .5
+    n_communities = len({partition.membership[i] for i in range(partition.n)})
+    if n_communities > 0:
+      n_correct = 0
+      for i in range(partition.n):
+        for j in range(partition.n):
+          pair_ij = partition.membership[i] == partition.membership[j]
+          pair_gt = ground_truth.membership[i] == ground_truth.membership[j]
+          if pair_ij == pair_gt:
+            n_correct += 1
+      acc = n_correct / partition.n ** 2
+      acc = (acc - .5) / .5  # normalize
+    else:
+      acc = 0
+    return acc
   
   def robustness(self, partition):
     """Calculate fraction of nodes that are robust wrt the resolution parameter (i.e. they do not change community when the resolution parameter is changed)
     """
     self.initialize_game(partition.membership)
-    if len(self['communities_nodes']) == 1:
-      return 0
-    is_robust_node = []
-    for node in self.vs:
-      # hedonic_value_res0 = self.value_of_node_in_community(node, node['community'], 0)
-      # hedonic_value_res1 = self.value_of_node_in_community(node, node['community'], 1)
-      # better_than_isolated = hedonic_value_res0 > 0 and hedonic_value_res1 > 0
-      pref_comm_res0 = self.get_preferable_community(node, 0)
-      pref_comm_res1 = self.get_preferable_community(node, 1)
-      on_best_community = pref_comm_res0 == pref_comm_res1 == node['community']
-      is_robust_node.append(on_best_community)
-    return is_robust_node.count(True) / len(is_robust_node)
+    if len(self['communities_nodes']) > 0:
+      is_robust_node = []
+      for node in self.vs:
+        pref_comm_res0 = self.get_preferable_community(node, 0)
+        pref_comm_res1 = self.get_preferable_community(node, 1)
+        on_best_community = pref_comm_res0 == pref_comm_res1 == node['community']
+        is_robust_node.append(on_best_community)
+      robust = is_robust_node.count(True) / len(is_robust_node)
+    else:
+      robust = 0
+    return robust
 
   ## need to verify #############################
 

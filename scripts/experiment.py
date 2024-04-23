@@ -1,9 +1,9 @@
 import os
 import json
 import config
+import argparse
 import numpy as np
 import igraph as ig
-from time import time
 from tqdm import tqdm
 from random import choice
 from stopwatch import Stopwatch
@@ -93,68 +93,81 @@ def run_experiment(
     folder_name,
     number_of_communities,
     community_size,
-    probabilities,
-    difficulties,
+    p_in,
+    difficulty,
     methods,
-    noise=1,
+    noises=[0],
     seed=42,
   ):
-  for p_in in tqdm(probabilities, desc='p_in', leave=False):
-    for multiplier in tqdm(difficulties, desc='multiplier', leave=False):
-      g = generate_graph(number_of_communities, community_size, p_in, multiplier, seed)
-      gt = get_ground_truth(g, number_of_communities, community_size) # get ground truth
-      initial_membership = get_initial_membership(g, gt, number_of_communities, True, noise) # get initial membership
-      edge_density = g.density()
-      for method, params in tqdm(methods.items(), desc='method', leave=False, total=len(methods)):
-        if method in {'community_leiden', 'community_hedonic'}:
-          params['resolution'] = edge_density
-        if 'initial_membership' in params:
-          params['initial_membership'] = initial_membership
+  # for p_in in tqdm(probabilities, desc='p_in', leave=False):
+  #   for multiplier in tqdm(difficulties, desc='multiplier', leave=False):
+  g = generate_graph(number_of_communities, community_size, p_in, difficulty, seed)
+  gt = get_ground_truth(g, number_of_communities, community_size) # get ground truth
+  edge_density = g.density()
+  for method, method_params in tqdm(methods.items(), desc='method', leave=False, total=len(methods)):
+    result = None
+    params = {k: v for k, v in method_params.items()}
+    if method in {'community_leiden', 'community_hedonic'}:
+      params['resolution'] = edge_density
+    for noise in tqdm(noises, desc='noise', leave=False, total=len(noises)):
+      if 'initial_membership' in params:
+        params['initial_membership'] = get_initial_membership(g, gt, number_of_communities, True, noise) # get initial membership
+        result = None
+      if result is None:
         result = get_method_result(
           g,
           method,
           params,
           p_in,
-          multiplier,
+          difficulty,
           community_size,
           number_of_communities,
           gt)
         result['noise'] = noise
         result['seed'] = seed
-        output_results_path = f"~/Databases/Hedonic/Experiments/{folder_name}/Clusters = {number_of_communities}/Size = {community_size}/Noise = {noise}/P_in = {p_in}/Multiplier = {multiplier}/Method = {method}"
-        file_path = os.path.join(
-          os.path.expanduser(output_results_path),
-          f'{method.split("_")[1]}_{time()}.json')
-        os.makedirs(os.path.dirname(file_path), exist_ok=True)
-        with open(file_path, 'w') as file:
-          file.write(json.dumps(result))
+      output_results_path = f"~/Databases/hedonic/{folder_name}/{number_of_communities} Communities of {community_size} nodes/Noise = {noise:.2f}/P_in = {p_in:.2f}/Difficulty = {difficulty:.2f}/Method = {method}"
+      file_path = os.path.join(
+        os.path.expanduser(output_results_path),
+        f'{method.split("_")[1]}_{seed}.json')
+      os.makedirs(os.path.dirname(file_path), exist_ok=True)
+      with open(file_path, 'w') as file:
+        file.write(json.dumps(result))
   return True
 
 #################################################
 
 def main():
-  folder_name = 'comparison'
-  noises = [0, .25, .5, 1]
-  max_n_nodes = 60 * 10
-  n_communities = [5]#[2, 3, 4, 5]
-  probabilities = [.10, .09, .08, .07, .06, .05, .04, .03, .02, .01]
-  difficulties = [.75, .7, .65, .6, .55, .5, .4, .3, .2, .1]
-  samples = 1
-  seed = 0
-  for noise in tqdm(noises, desc='noise', leave=False, total=len(noises)):
-    for n_comm in tqdm(n_communities, desc='n_communities', leave=False, total=len(n_communities)):
-      for _ in tqdm(range(samples), desc='samples', leave=False, total=len(range(samples))):
-        community_size = int(max_n_nodes / n_comm)
-        run_experiment(
-          folder_name,
-          n_comm,
-          community_size,
-          probabilities,
-          difficulties,
-          config.methods,
-          noise,
-          seed)
-        seed += 1
+  # Parse command line arguments
+  # "python scripts/experiment.py --folder_name sample_exp --max_n_nodes 120 --n_communities $n_community --seed $seed --p_in $p_in --difficulty $difficulty"
+  parser = argparse.ArgumentParser(description='Run hedonic game experiments.')
+  parser.add_argument('--folder_name', type=str, required=False, help='Name of the folder to store results', default='test')
+  parser.add_argument('--max_n_nodes', type=int, required=False, help='Maximum number of nodes', default=60)
+  parser.add_argument('--n_communities', type=int, required=False, help='Number of clusters', default=2)
+  parser.add_argument('--seed', type=int, required=False, help='Seed', default=42)
+  parser.add_argument('--p_in', type=float, required=False, help='Probability of edge within communities', default=0.1)
+  parser.add_argument('--difficulty', type=float, required=False, help='Difficulty of the problem', default=0.5)
+  args = parser.parse_args()
+
+  folder_name = args.folder_name
+  seed = args.seed
+  max_n_nodes = args.max_n_nodes
+  n_communities = args.n_communities
+  p_in = args.p_in
+  difficulty = args.difficulty
+  print(f'Running experiments with the following parameters:\n{args}')
+  # probabilities = [.10, .09, .08, .07, .06, .05, .04, .03, .02, .01]
+  # difficulties = [.75, .7, .65, .6, .55, .5, .4, .3, .2, .1]
+  noises = [0.01, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.1]
+  community_size = int(max_n_nodes / n_communities)
+  run_experiment(
+    folder_name,
+    n_communities,
+    community_size,
+    p_in,
+    difficulty,
+    config.methods,
+    noises,
+    seed)
   return True
 
 
