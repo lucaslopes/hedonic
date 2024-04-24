@@ -71,9 +71,9 @@ def get_method_result(
   except Exception as e:
     partition = ig.clustering.VertexClustering(g, [0] * g.vcount())
     print(f"\nPARTITIONING ERROR:\n{e}\n{method_name=}\n{p_in=}\n{multiplier=}\n{community_size=}\n{number_of_communities=}")
-    return None
   stopwatch.stop()
   accuracy = g.accuracy(partition, ground_truth) # calculate accuracy wrt the ground truth
+  accuracy_edges = g.accuracy_classify_edges(partition, ground_truth) # calculate accuracy wrt the ground truth
   robustness = g.robustness(partition) # calculate robustness
   result = {
     'method': method_name.split("_")[1],
@@ -85,6 +85,7 @@ def get_method_result(
     'resolution': method_params['resolution'] if 'resolution' in method_params else None,
     'duration': stopwatch.duration,
     'accuracy': accuracy,
+    'accuracy_edges': accuracy_edges,
     'robustness': robustness,
     'partition': partition.membership,}
   return result
@@ -123,8 +124,8 @@ def run_experiment(
           community_size,
           number_of_communities,
           gt)
-        result['noise'] = noise
-        result['seed'] = seed
+      result['noise'] = noise
+      result['seed'] = seed
       output_results_path = f"~/Databases/hedonic/{folder_name}/{number_of_communities} Communities of {community_size} nodes/Noise = {noise:.2f}/P_in = {p_in:.2f}/Difficulty = {difficulty:.2f}/Method = {method}"
       file_path = os.path.join(
         os.path.expanduser(output_results_path),
@@ -142,32 +143,34 @@ def main():
   parser = argparse.ArgumentParser(description='Run hedonic game experiments.')
   parser.add_argument('--folder_name', type=str, required=False, help='Name of the folder to store results', default='test')
   parser.add_argument('--max_n_nodes', type=int, required=False, help='Maximum number of nodes', default=60)
-  parser.add_argument('--n_communities', type=int, required=False, help='Number of clusters', default=2)
-  parser.add_argument('--seed', type=int, required=False, help='Seed', default=42)
-  parser.add_argument('--p_in', type=float, required=False, help='Probability of edge within communities', default=0.1)
-  parser.add_argument('--difficulty', type=float, required=False, help='Difficulty of the problem', default=0.5)
+  parser.add_argument('--n_communities', type=int, nargs='+', required=False, help='Number of clusters', default=[2])
+  parser.add_argument('--seeds', type=int, nargs='+', required=False, help='Seeds', default=[42])
+  # parser.add_argument('--p_in', type=float, required=False, help='Probability of edge within communities', default=0.1)
+  # parser.add_argument('--difficulty', type=float, required=False, help='Difficulty of the problem', default=0.5)
   args = parser.parse_args()
 
-  folder_name = args.folder_name
-  seed = args.seed
+  folder_name = args.folder_name # MainResultExperiment
   max_n_nodes = args.max_n_nodes
-  n_communities = args.n_communities
-  p_in = args.p_in
-  difficulty = args.difficulty
-  print(f'Running experiments with the following parameters:\n{args}')
-  # probabilities = [.10, .09, .08, .07, .06, .05, .04, .03, .02, .01]
-  # difficulties = [.75, .7, .65, .6, .55, .5, .4, .3, .2, .1]
+  n_communities = args.n_communities # [2, 3, 4, 5, 6]
+  seeds = args.seeds # [1, 2, 3, 4, 5]
+  probabilities = [.10, .09, .08, .07, .06, .05, .04, .03, .02, .01]
+  difficulties = [.75, .7, .65, .6, .55, .5, .4, .3, .2, .1]
   noises = [0.01, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.1]
-  community_size = int(max_n_nodes / n_communities)
-  run_experiment(
-    folder_name,
-    n_communities,
-    community_size,
-    p_in,
-    difficulty,
-    config.methods,
-    noises,
-    seed)
+  for n_community in tqdm(n_communities, desc='n_community', leave=False):
+    community_size = int(max_n_nodes / n_community)
+    for seed in tqdm(seeds, desc='seed', leave=False):
+      for p_in in tqdm(probabilities, desc='p_in', leave=False):
+        for difficulty in tqdm(difficulties, desc='difficulty', leave=False):
+          run_experiment(
+            folder_name,
+            n_community,
+            community_size,
+            p_in,
+            difficulty,
+            config.methods,
+            noises,
+            seed)
+  print(f'Experiments completed successfully.')
   return True
 
 

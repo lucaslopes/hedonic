@@ -50,7 +50,7 @@ def plot_heatmaps(df):
 
 def read_json_to_dataframe(directory_path):
   data = []
-  my_path = '/Users/lucas/Databases/Hedonic/Experiments/paper_exp/Clusters = 3/Size = 340/Noise = 0.1/P_in = 0.1/Multiplier = 0.1/Method = community_hedonic/hedonic_1713561021.846727.json'
+  # my_path = '/Users/lucas/Databases/Hedonic/Experiments/paper_exp/Clusters = 3/Size = 340/Noise = 0.1/P_in = 0.1/Multiplier = 0.1/Method = community_hedonic/hedonic_1713561021.846727.json'
   directory = os.path.expanduser(directory_path)
   for root, dirs, files in os.walk(directory):
     for file in files:
@@ -67,12 +67,13 @@ def read_json_to_dataframe(directory_path):
 
 def main():
   frame_files = []
-  pth_base = '/Users/lucas/Databases/Hedonic/Experiments/paper_exp/'
+  pth_base = '/Users/lucas/Databases/Hedonic/all60/'
   df = read_json_to_dataframe(pth_base)#config.experiment_params['output_results_path'])
-  paths = {re.sub(r'/P_in = \d+.*', '', p) for p in df['path'].values if 'Clusters = 3' in p}
+  df['noise'] = df['path'].apply(lambda x: float(re.search(r'/Noise = (\d+.*)/P_in*', x).group(1)))
+  paths = {re.sub(r'/P_in = \d+.*', '', p) for p in df['path'].values}# if 'Clusters = 3' in p}
   paths = sorted(paths)
   for i, pth in enumerate(paths):  # Generate 100 frames
-    n_clusters = int(re.search(r'/Clusters = (\d+)/', pth).group(1))
+    n_clusters = int(re.search(r'/(\d+) Communities of', pth).group(1))
     noise = float(re.search(r'/Noise = (\d+.*)', pth).group(1))
     df_filter = df[(df["number_of_communities"] == n_clusters) & (df["noise"] == noise)]
     fig, axes = plot_heatmaps(df_filter)
@@ -85,7 +86,7 @@ def main():
   # Compose video
   frame = cv2.imread(frame_files[0])
   height, width, layers = frame.shape
-  video = cv2.VideoWriter('video__.mp4', cv2.VideoWriter_fourcc(*'mp4v'), 10, (width, height))
+  video = cv2.VideoWriter(f"video_{pth_base.split('/')[-2]}.mp4", cv2.VideoWriter_fourcc(*'mp4v'), 10, (width, height))
   frames_per_image = 10  # Define how many frames you want for each image
   for frame_file in frame_files:
     image = cv2.imread(frame_file)
