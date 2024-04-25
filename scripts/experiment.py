@@ -99,7 +99,7 @@ def run_experiment(
     noises=[0],
     seed=42,
   ):
-  # np.random.seed(seed)
+  np.random.seed(seed)
   # for p_in in tqdm(probabilities, desc='p_in', leave=False):
   #   for multiplier in tqdm(difficulties, desc='multiplier', leave=False):
   g = generate_graph(number_of_communities, community_size, p_in, difficulty, seed)
