@@ -73,7 +73,7 @@ def get_method_result(
     print(f"\nPARTITIONING ERROR:\n{e}\n{method_name=}\n{p_in=}\n{multiplier=}\n{community_size=}\n{number_of_communities=}")
   stopwatch.stop()
   accuracy = g.accuracy(partition, ground_truth) # calculate accuracy wrt the ground truth
-  accuracy_edges = g.accuracy_classify_edges(partition, ground_truth) # calculate accuracy wrt the ground truth
+  # accuracy_edges = g.accuracy_classify_edges(partition, ground_truth) # calculate accuracy wrt the ground truth
   robustness = g.robustness(partition) # calculate robustness
   result = {
     'method': method_name.split("_")[1],
@@ -85,7 +85,7 @@ def get_method_result(
     'resolution': method_params['resolution'] if 'resolution' in method_params else None,
     'duration': stopwatch.duration,
     'accuracy': accuracy,
-    'accuracy_edges': accuracy_edges,
+    # 'accuracy_edges': accuracy_edges,
     'robustness': robustness,
     'partition': partition.membership,}
   return result
@@ -108,6 +108,8 @@ def run_experiment(
   for method, method_params in tqdm(methods.items(), desc='method', leave=False, total=len(methods)):
     result = None
     params = {k: v for k, v in method_params.items()}
+    if method == 'community_groundtruth':
+      params['groundtruth'] = gt
     if method in {'community_leiden', 'community_hedonic'}:
       params['resolution'] = edge_density
     for noise in tqdm(noises, desc='noise', leave=False, total=len(noises)):
@@ -155,7 +157,7 @@ def main():
   seeds = args.seeds # [1, 2, 3, 4, 5]
   probabilities = args.p_in # [.10, .09, .08, .07, .06, .05, .04, .03, .02, .01]
   difficulties = args.difficulty # [.75, .7, .65, .6, .55, .5, .4, .3, .2, .1]
-  noises = [0.01, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.1]
+  noises = [0.01, 0.25, 0.5, 0.6, 0.7, .75, 0.8, 0.85, 0.9, 0.95, 1.0, 1.1]
   for n_community in tqdm(n_communities, desc='n_community', leave=False):
     community_size = int(max_n_nodes / n_community)
     for seed in tqdm(seeds, desc='seed', leave=False):
