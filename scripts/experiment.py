@@ -145,16 +145,16 @@ def main():
   parser.add_argument('--max_n_nodes', type=int, required=False, help='Maximum number of nodes', default=60)
   parser.add_argument('--n_communities', type=int, nargs='+', required=False, help='Number of clusters', default=[2])
   parser.add_argument('--seeds', type=int, nargs='+', required=False, help='Seeds', default=[42])
-  # parser.add_argument('--p_in', type=float, required=False, help='Probability of edge within communities', default=0.1)
-  # parser.add_argument('--difficulty', type=float, required=False, help='Difficulty of the problem', default=0.5)
+  parser.add_argument('--p_in', type=float, nargs='+', required=False, help='Probability of edge within communities', default=[0.1])
+  parser.add_argument('--difficulty', type=float, nargs='+', required=False, help='Difficulty of the problem', default=[0.5])
   args = parser.parse_args()
 
   folder_name = args.folder_name # MainResultExperiment
   max_n_nodes = args.max_n_nodes
   n_communities = args.n_communities # [2, 3, 4, 5, 6]
   seeds = args.seeds # [1, 2, 3, 4, 5]
-  probabilities = [.10, .09, .08, .07, .06, .05, .04, .03, .02, .01]
-  difficulties = [.75, .7, .65, .6, .55, .5, .4, .3, .2, .1]
+  probabilities = args.p_in # [.10, .09, .08, .07, .06, .05, .04, .03, .02, .01]
+  difficulties = args.difficulty # [.75, .7, .65, .6, .55, .5, .4, .3, .2, .1]
   noises = [0.01, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.1]
   for n_community in tqdm(n_communities, desc='n_community', leave=False):
     community_size = int(max_n_nodes / n_community)
@@ -175,3 +175,5 @@ def main():
 
 
 __name__ == '__main__' and main()
+
+# caffeinate -s python scripts/experiment.py --folder_name exp600 --max_n_nodes 600 --n_communities 2 3 4 5 6 --seeds 1 2 3 4 5
