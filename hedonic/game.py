@@ -103,25 +103,11 @@ class HedonicGame(ig.Graph):
     else:
       acc = 0
     return acc
-  
-  def accuracy_classify_edges(self, partition, ground_truth):
-    n_correct_classify_edges = 0
-    n_edges = self.ecount()
-    for edge in self.es:
-      source = edge.source
-      target = edge.target
-      source_community = partition.membership[source]
-      target_community = partition.membership[target]
-      source_ground_truth = ground_truth.membership[source]
-      target_ground_truth = ground_truth.membership[target]
-      if source_community == target_community and source_ground_truth == target_ground_truth:
-        n_correct_classify_edges += 1
-    accuracy_classify_edges = n_correct_classify_edges / n_edges
-    return accuracy_classify_edges
-  
+
   def robustness(self, partition):
     """Calculate fraction of nodes that are robust wrt the resolution parameter (i.e. they do not change community when the resolution parameter is changed)
     """
+    partition = ig.clustering.VertexClustering(self, partition) if type(partition) == list else partition
     self.initialize_game(partition.membership)
     if len(self['communities_nodes']) > 0:
       is_robust_node = []

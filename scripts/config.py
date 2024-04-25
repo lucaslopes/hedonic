@@ -37,4 +37,7 @@ methods = {
   'community_local_improvement' : {
     'initial_membership': None,
   },
+  'community_groundtruth': {
+    'groundtruth': None,
+  },
 }
