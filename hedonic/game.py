@@ -3,8 +3,22 @@ import igraph as ig
 #################################################
 
 class HedonicGame(ig.Graph):
-  def __init__(self, *args, **kwargs):
+  def __init__(self, graph=None, *args, **kwargs):
+    # Initialize the base class with empty parameters
     super().__init__(*args, **kwargs)
+    # If a graph instance is provided, copy its structure and attributes
+    if graph:
+      self.add_vertices(graph.vcount())
+      self.add_edges(graph.get_edgelist())
+      # Copy vertex attributes
+      for attr in graph.vertex_attributes():
+        self.vs[attr] = graph.vs[attr]
+      # Copy edge attributes
+      for attr in graph.edge_attributes():
+        self.es[attr] = graph.es[attr]
+      # Copy graph attributes
+      for attr in graph.attributes():
+        self[attr] = graph[attr]
 
   def hedonic_value(self, neighbors, strangers, resolution):
     pros = neighbors * (1-resolution) # prosocial value
@@ -71,7 +85,8 @@ class HedonicGame(ig.Graph):
   def membership(self):
     return [int(node['community']) for node in self.vs]
 
-  def community_hedonic(self, resolution=1, initial_membership=None, log_memberships=False):
+  def community_hedonic(self, resolution=None, initial_membership=None, log_memberships=False):
+    resolution = resolution if resolution else self.density()
     self['log_memberships'] = []
     self.initialize_game(initial_membership)
     a_node_has_moved = True
@@ -89,6 +104,9 @@ class HedonicGame(ig.Graph):
   ## statistics #################################
 
   def accuracy(self, partition, ground_truth):
+    # Rand index of Rand (1971)
+    partition = ig.clustering.VertexClustering(self, partition) if type(partition) == list else partition
+    ground_truth = ig.clustering.VertexClustering(self, ground_truth) if type(ground_truth) == list else ground_truth
     n_communities = len({partition.membership[i] for i in range(partition.n)})
     if n_communities > 0:
       n_correct = 0
