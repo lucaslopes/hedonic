@@ -11,8 +11,9 @@ import re
 #################################################
 
 def plot_heatmaps(df, max_value=None):
-  fig, axes = plt.subplots(3, 5, figsize=(16, 9), dpi=300) # (14, 7)
+  fig, axes = plt.subplots(3, 6, figsize=(20, 10), dpi=300) # (14, 7)
   method_names = {
+    'groundtruth': 'Groundtruth',
     'hedonic': 'Hedonic',
     'leiden': 'Leiden',
     'multilevel': 'Louvain',
@@ -23,18 +24,20 @@ def plot_heatmaps(df, max_value=None):
     'robustness': 'Blues',
     'duration': 'YlOrBr',}
   method_col = {
-    'hedonic': 3,
-    'leiden': 2,
-    'multilevel': 1,
-    'leading': 0,
-    'local': 4,}
+    'groundtruth': 0,
+    'hedonic': 4,
+    'leiden': 3,
+    'multilevel': 2,
+    'leading': 1,
+    'local': 5,}
   value_row = {
     'accuracy': 0,
     'robustness': 1,
     'duration': 2,}
   for i, value_column in enumerate(value_columns):
     vmin = 0
-    vmax = df['duration'].max() if max_value is None else max_value if value_column == 'duration' else 1
+    # vmax = df['duration'].max() if max_value is None else max_value if value_column == 'duration' else 1
+    vmax = df[value_column].max() if value_column == 'duration' else 1
     grouped_data = df.groupby(['method', 'p_in', 'multiplier'])[value_column].mean().reset_index()
     methods = grouped_data["method"].unique()
     for j, method in enumerate(methods):
@@ -72,20 +75,20 @@ def read_json_to_dataframe(directory_path):
 
 def main():
   frame_files = []
-  folder = 'Results_1020'
-  pth_base = f'/Users/lucas/Databases/Hedonic/{folder}'
+  folder = 'FINAL_1020'
+  pth_base = f'/Users/lucas/Databases/Hedonic/ServerResult/{folder}'
   df = read_json_to_dataframe(pth_base)#config.experiment_params['output_results_path'])
   vmax = df['duration'].max()
   df['noise'] = df['path'].apply(lambda x: float(re.search(r'/Noise = (\d+.*)/P_in*', x).group(1)))
   paths = {re.sub(r'/P_in = \d+.*', '', p) for p in df['path'].values}# if 'Clusters = 3' in p}
   paths = sorted(paths)
-  for i, pth in tqdm(enumerate(paths)):  # Generate 100 frames
+  for i, pth in tqdm(enumerate(paths), total=len(paths)):  # Generate 100 frames
     n_clusters = int(re.search(r'/(\d+) Communities of', pth).group(1))
     noise = float(re.search(r'/Noise = (\d+.*)', pth).group(1))
     df_filter = df[(df["number_of_communities"] == n_clusters) & (df["noise"] == noise)]
     fig, axes = plot_heatmaps(df_filter, max_value=None)
     frame_file = f"media/{folder}_frame_{i:02d}.png"
-    fig.suptitle(pth[len(pth_base):], fontsize=16)
+    fig.suptitle(pth[len(pth_base)+1:].replace('/', ' | '), fontsize=16)
     plt.tight_layout()
     plt.savefig(frame_file)
     plt.close()

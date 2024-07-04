@@ -104,21 +104,32 @@ class HedonicGame(ig.Graph):
       acc = 0
     return acc
 
-  def robustness(self, partition):
+  def robustness_per_community(self, partition, only_community_of_index=None):
     """Calculate fraction of nodes that are robust wrt the resolution parameter (i.e. they do not change community when the resolution parameter is changed)
     """
     partition = ig.clustering.VertexClustering(self, partition) if type(partition) == list else partition
     self.initialize_game(partition.membership)
-    if len(self['communities_nodes']) > 0:
-      is_robust_node = []
-      for node in self.vs:
+    communities = list()
+    for idx, community in enumerate(partition):
+      if only_community_of_index is not None and idx != only_community_of_index:
+        continue
+      full_robust_nodes = 0
+      for n in community:
+        node = self.vs[n]
         pref_comm_res0 = self.get_preferable_community(node, 0)
         pref_comm_res1 = self.get_preferable_community(node, 1)
-        on_best_community = pref_comm_res0 == pref_comm_res1 == node['community']
-        is_robust_node.append(on_best_community)
-      robust = is_robust_node.count(True) / len(is_robust_node)
-    else:
-      robust = 0
+        on_best_community = pref_comm_res0 == pref_comm_res1 == idx
+        full_robust_nodes += 1 if on_best_community else 0
+      communities.append((full_robust_nodes, len(community)))
+    return communities
+
+  def robustness(self, partition):
+    """Calculate fraction of nodes that are robust wrt the resolution parameter (i.e. they do not change community when the resolution parameter is changed)
+    """
+    robust = 0
+    communities = self.robustness_per_community(partition)
+    if len(self['communities_nodes']) > 0:
+      robust = sum([robust for robust, total in communities]) / self.vcount()
     return robust
 
   ## need to verify #############################
