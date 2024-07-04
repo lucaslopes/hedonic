@@ -1,11 +1,11 @@
 import os
 import json
 import config
+import random
 import argparse
 import numpy as np
 import igraph as ig
 from tqdm import tqdm
-from random import choice
 from stopwatch import Stopwatch
 from hedonic import HedonicGame
 from methods import CommunityMethods  # CommunityMethods is a subclass of HedonicGame
@@ -28,8 +28,7 @@ def generate_graph(n_communities, community_size, p_in, multiplier, seed):
 
 def get_ground_truth(g: HedonicGame, number_of_communities, community_size):
   gt_membership = np.concatenate([
-    np.full(community_size, i) for i in range(number_of_communities)
-  ]) # ground truth membership
+    np.full(community_size, i) for i in range(number_of_communities)]).tolist() # ground truth membership
   return ig.clustering.VertexClustering(g, gt_membership) # return ground truth
 
 def get_initial_membership(g: HedonicGame, ground_truth, number_of_communities, know_n_clusters=False, noise=1):
@@ -37,7 +36,7 @@ def get_initial_membership(g: HedonicGame, ground_truth, number_of_communities, 
   if not know_n_clusters:
     membership = [node.index for node in g.vs] # Singleton partition
   else:
-    membership = [choice(range(number_of_communities)) if np.random.rand() < noise else c for c in ground_truth.membership]
+    membership = [np.random.choice(range(number_of_communities)) if np.random.rand() < noise else c for c in ground_truth.membership]
   return membership # ig.clustering.VertexClustering(g, membership) # return initial membership
 
 def limit_community_count(g: HedonicGame, partition, max_n_communities): # since we known in advance the number of communities we can limit it
@@ -100,6 +99,7 @@ def run_experiment(
     noises=[0],
     seed=42,
   ):
+  np.random.seed(seed)
   # for p_in in tqdm(probabilities, desc='p_in', leave=False):
   #   for multiplier in tqdm(difficulties, desc='multiplier', leave=False):
   g = generate_graph(number_of_communities, community_size, p_in, difficulty, seed)

@@ -8,7 +8,7 @@ class CommunityMethods(HedonicGame):
     super().__init__(*args, **kwargs)
 
   def community_groundtruth(self, groundtruth):
-    return ig.clustering.VertexClustering(self, groundtruth)
+    return ig.clustering.VertexClustering(self, groundtruth) if type(groundtruth) == list else groundtruth
 
   def community_local_improvement(self, initial_membership=None):
     for node, community in zip(self.vs, initial_membership):

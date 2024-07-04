@@ -10,6 +10,9 @@ experiment_params = {
 # experiment_params['output_results_path'] = f"~/Databases/hedonic/{experiment_params['number_of_communities']}C_{experiment_params['community_size']}N_4_methods_{len(experiment_params['probabilities'])}_probabilities_{len(experiment_params['difficulties'])}_difficulties"
 
 methods = {
+  'community_groundtruth': {
+    'groundtruth': None,
+  },
   'community_leading_eigenvector': {
     'clusters': None, # the desired number of communities. If C{None}, the algorithm tries to do as many splits as possible. Note that the algorithm won't split a community further if the signs of the leading eigenvector are all the same, so the actual number of discovered communities can be less than the desired one.
     'weights': None, # name of an edge attribute or a list containing edge weights.
@@ -36,8 +39,5 @@ methods = {
   },
   'community_local_improvement' : {
     'initial_membership': None,
-  },
-  'community_groundtruth': {
-    'groundtruth': None,
   },
 }
