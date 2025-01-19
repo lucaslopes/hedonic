@@ -1,10 +1,10 @@
+import time
 import gzip
 import numpy as np
 import igraph as ig
-import seaborn as sns
-import matplotlib.pyplot as plt
-from hedonic import HedonicGame
 from tqdm import tqdm
+from node_robust import *
+
 
 def read_txt_gz_to_igraph(file_path):
     edges = []
@@ -20,8 +20,9 @@ def read_txt_gz_to_igraph(file_path):
             else:
                 print(line, nodes)
     # Assuming the file contains an edge list with each line as 'source target'
-    graph = HedonicGame(edges=edges, directed=False)
+    graph = ig.Graph(edges=edges, directed=False)
     return graph
+
 
 def read_communities(file_path, mode='list_of_communities'):
     communities = []
@@ -42,54 +43,47 @@ def read_communities(file_path, mode='list_of_communities'):
                 communities[community] = set({node})
     return communities
 
-def get_robustness(graph, communities):
-    robustness = list()
-    for comm in tqdm(communities):
-        initial_membership = np.zeros(graph.vcount(), dtype=int)
-        for n in comm:
-            initial_membership[n] = 1
-        # robustness.append(graph.robustness(initial_membership))
-        robustness.append(graph.robustness_per_community(initial_membership, only_community_of_index=1))
-    return robustness
 
-def get_accuracy(graph: HedonicGame, communities, noise=0.):
+
+def get_accuracy(graph, communities, noise=0.):
     accuracy_hedonic, accuracy_leiden = list(), list()
+    times_hedonic, times_leiden = list(), list()
     for comm in tqdm(communities):
         initial_membership = np.zeros(graph.vcount(), dtype=int)
         for n in comm:
             if np.random.random() > noise:
                 initial_membership[n] = 1
-        print('running for hedonic')
-        res_hedonic = graph.community_hedonic(initial_membership=initial_membership)
-        print('running for leiden')
+        start = time.time()
+        res_hedonic = graph.community_leiden(hedonic=True, initial_membership=initial_membership, n_iterations=-1, resolution=graph.density())
+        end = time.time()
+        times_hedonic.append(end - start)
+        start = time.time()
         res_leiden = graph.community_leiden(initial_membership=initial_membership, n_iterations=-1, resolution=graph.density())
-        accuracy_hedonic.append(ig.compare_communities(res_hedonic, comm, method="rand"))
+        end = time.time()
+        times_leiden.append(end - start)
+        accuracy_hedonic.append(ig.compare_communities(res_hedonic, initial_membership, method="rand"))
         accuracy_leiden.append(ig.compare_communities(res_leiden, initial_membership, method="rand"))
-    return accuracy_hedonic, accuracy_leiden
+    return accuracy_hedonic, accuracy_leiden, times_hedonic, times_leiden
 
-file_path = '/Users/lucas/Databases/Hedonic/Networks/DBLP/com-dblp.ungraph.txt.gz'
-graph = read_txt_gz_to_igraph(file_path)
-print(graph.summary())
 
-communities_path = '/Users/lucas/Databases/Hedonic/Networks/DBLP/com-dblp.top5000.cmty.txt.gz'
-communities = read_communities(communities_path)[:10]
+def main():
+    file_path = '/Users/lucas/Databases/Hedonic/Networks/DBLP/com-dblp.ungraph.txt.gz'
+    graph = read_txt_gz_to_igraph(file_path)
+    print(graph.summary())
+    communities_path = '/Users/lucas/Databases/Hedonic/Networks/DBLP/com-dblp.top5000.cmty.txt.gz'
+    communities = read_communities(communities_path)
+    robustness = [get_community_robustness(graph, communities[i], intra=True) for i in range(10)]
+    print(robustness)
+    
+    # accuracy_hedonic, accuracy_leiden, times_hedonic, times_leiden = get_accuracy(graph, communities[:10], noise=0.)
+    # print(accuracy_hedonic)
+    # print(accuracy_leiden)
+    # print(times_hedonic)
+    # print(times_leiden)
 
-accuracy_hedonic, accuracy_leiden = get_accuracy(graph, communities)
-# robustness_values = get_robustness(graph, communities)
-# Creating subplots
-fig, axes = plt.subplots(1, 2, figsize=(12, 6))
 
-# Plotting the violin plots
-sns.violinplot(data=accuracy_hedonic, ax=axes[0])
-sns.violinplot(data=accuracy_leiden, ax=axes[1])
 
-# Adding labels and titles
-axes[0].set_title('Accuracy Hedonic')
-axes[1].set_title('Accuracy Leiden')
-for ax in axes:
-    ax.set_xlabel('Community')
-    ax.set_ylabel('Accuracy')
 
-# Display the plot
-plt.tight_layout()
-plt.show()
+if __name__ == "__main__":
+    main()
+

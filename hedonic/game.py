@@ -6,8 +6,7 @@ class HedonicGame(ig.Graph):
   def __init__(self, graph=None, *args, **kwargs):
     # Initialize the base class with empty parameters
     super().__init__(*args, **kwargs)
-    # If a graph instance is provided, copy its structure and attributes
-    if graph:
+    if type(graph) == ig.Graph: # if graph is an igraph
       self.add_vertices(graph.vcount())
       self.add_edges(graph.get_edgelist())
       # Copy vertex attributes
@@ -28,7 +27,7 @@ class HedonicGame(ig.Graph):
   def initialize_game(self, initial_membership):
     self['communities_nodes'] = dict() # communities are sets of nodes
     self['communities_edges'] = dict() # communities are count of internal edges
-    initial_membership = initial_membership if initial_membership else [node.index for node in self.vs]
+    initial_membership = initial_membership if type(initial_membership) == list else [node.index for node in self.vs]
     for node, community in zip(self.vs, initial_membership):
       self.vs[node.index]['community'] = community
       try:
@@ -58,7 +57,8 @@ class HedonicGame(ig.Graph):
       strangers -= 1 # node is not a stranger to itself
     return self.hedonic_value(neighbors, strangers, resolution) # return hedonic value of node in community
 
-  def get_preferable_community(self, node, resolution):
+  def get_preferable_community(self, node, resolution=None):
+    resolution = resolution if resolution else self.density()
     pref_community = node['community']
     highest_hedonic_value = self.value_of_node_in_community(node, node['community'], resolution)
     communities = [c for c, amount in node['neighbors_in_community'].items() if amount > 0]
@@ -68,6 +68,13 @@ class HedonicGame(ig.Graph):
         pref_community = community
         highest_hedonic_value = hedonic
     return pref_community
+  
+  def in_equibrium(self, resolution):
+    for node in self.vs:
+      pref_comm = self.get_preferable_community(node, resolution)
+      if pref_comm != node['community']:
+        return False
+    return True
 
   def move_node_to_community(self, node, community):
     derparture, arrival = node['community'], community # departure and arrival communities
@@ -85,7 +92,7 @@ class HedonicGame(ig.Graph):
   def membership(self):
     return [int(node['community']) for node in self.vs]
 
-  def community_hedonic(self, resolution=None, initial_membership=None, log_memberships=False):
+  def community_hedonic_old(self, resolution=None, initial_membership=None, log_memberships=False):
     resolution = resolution if resolution else self.density()
     self['log_memberships'] = []
     self.initialize_game(initial_membership)
@@ -101,12 +108,46 @@ class HedonicGame(ig.Graph):
             self['log_memberships'].append(self.membership())
     return ig.clustering.VertexClustering(self, self.membership())
   
+  def community_hedonic(self, resolution=None, initial_membership=None, log_memberships=False):
+    resolution = resolution if resolution else self.density()
+    self['log_memberships'] = []
+    print("Initializing game...")
+    self.initialize_game(initial_membership)
+    print("Running hedonic game...")
+    while not self.in_equibrium(resolution):
+      # Initialize the queue with all nodes
+      print("Initializing queue...")
+      queue = [node.index for node in self.vs]
+      in_queue = set(queue)  # Track nodes in the queue to avoid duplicates
+      
+      while queue:
+        node_index = queue.pop(0)
+        in_queue.remove(node_index)
+
+        node = self.vs[node_index]
+        pref_comm = self.get_preferable_community(node, resolution)
+        if pref_comm != node['community']:
+          self.move_node_to_community(node, pref_comm)
+
+          # Add neighbors to the queue if not already in it or the new community
+          for neighbor_index in self.neighbors(node):
+            neighbor = self.vs[neighbor_index]
+            if neighbor_index not in in_queue and neighbor['community'] != pref_comm:
+              queue.append(neighbor_index)
+              in_queue.add(neighbor_index)
+
+            if log_memberships:
+              self['log_memberships'].append(self.membership())
+    
+    return ig.clustering.VertexClustering(self, self.membership())
+
   ## statistics #################################
 
   def accuracy(self, partition, ground_truth):
     # Rand index of Rand (1971)
     partition = ig.clustering.VertexClustering(self, partition) if type(partition) == list else partition
     ground_truth = ig.clustering.VertexClustering(self, ground_truth) if type(ground_truth) == list else ground_truth
+    return ig.compare_communities(partition, ground_truth, method="rand")
     n_communities = len({partition.membership[i] for i in range(partition.n)})
     if n_communities > 0:
       n_correct = 0
@@ -125,7 +166,7 @@ class HedonicGame(ig.Graph):
   def robustness_per_community(self, partition, only_community_of_index=None):
     """Calculate fraction of nodes that are robust wrt the resolution parameter (i.e. they do not change community when the resolution parameter is changed)
     """
-    partition = ig.clustering.VertexClustering(self, partition) if type(partition) == list else partition
+    partition = partition if type(partition) == ig.clustering.VertexClustering else ig.clustering.VertexClustering(self, partition)
     self.initialize_game(partition.membership)
     communities = list()
     for idx, community in enumerate(partition):
@@ -158,7 +199,7 @@ class HedonicGame(ig.Graph):
       global_potential += self.potential_of_community(community)
     return global_potential
 
-  def potential_of_community(self, community, alpha=None):
+  def potential_of_community(self, community, alpha):
     connections = self['communities_edges'][community]
     missed_connections = self.total_possible_edges(len(self['communities_nodes'][community])) - connections
     return self.hedonic_value(connections, missed_connections, alpha)
@@ -169,7 +210,7 @@ class HedonicGame(ig.Graph):
       bridges += self.vs[node]['friends_in_community'][community_B]
     return bridges
 
-  def potential_merged(self, community_A, community_B, alpha=None):
+  def potential_merged(self, community_A, community_B, alpha):
     total_verts = len(self['communities_nodes'][community_A]) + len(self['communities_nodes'][community_B])
     connections = self['communities_edges'][community_A] + self['communities_edges'][community_B] + self.edges_between(community_A, community_B)
     missed_connections = self.total_possible_edges(total_verts) - connections

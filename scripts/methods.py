@@ -10,7 +10,12 @@ class CommunityMethods(HedonicGame):
   def community_groundtruth(self, groundtruth):
     return ig.clustering.VertexClustering(self, groundtruth) if type(groundtruth) == list else groundtruth
 
-  def community_local_improvement(self, initial_membership=None):
+  def community_mirror(self, initial_membership=None):
+    if initial_membership is None:
+      initial_membership = [0] * self.vcount()
+    return ig.clustering.VertexClustering(self, initial_membership)
+
+  def community_onepass_improvement(self, initial_membership=None):
     for node, community in zip(self.vs, initial_membership):
       self.vs[node.index]['community'] = int(community)
     nodes_to_move = list()
@@ -26,7 +31,7 @@ class CommunityMethods(HedonicGame):
       new_membership[node] = community
     return ig.clustering.VertexClustering(self, new_membership)
 
-  def community_local_improvement_hedonic(self, initial_membership=None):
+  def community_onepass_improvement_hedonic(self, initial_membership=None):
     self.initialize_game(initial_membership)
     nodes_to_move = list()
     for node in self.vs:
