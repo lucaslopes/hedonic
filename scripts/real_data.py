@@ -3,7 +3,7 @@ import numpy as np
 import igraph as ig
 import seaborn as sns
 import matplotlib.pyplot as plt
-from hedonic import HedonicGame
+from hedonic import Game
 from tqdm import tqdm
 
 def read_txt_gz_to_igraph(file_path):
@@ -20,7 +20,7 @@ def read_txt_gz_to_igraph(file_path):
             else:
                 print(line, nodes)
     # Assuming the file contains an edge list with each line as 'source target'
-    graph = HedonicGame(edges=edges, directed=False)
+    graph = Game(edges=edges, directed=False)
     return graph
 
 def read_communities(file_path, mode='list_of_communities'):
@@ -52,7 +52,7 @@ def get_robustness(graph, communities):
         robustness.append(graph.robustness_per_community(initial_membership, only_community_of_index=1))
     return robustness
 
-def get_accuracy(graph: HedonicGame, communities, noise=0.):
+def get_accuracy(graph: Game, communities, noise=0.):
     accuracy_hedonic, accuracy_leiden = list(), list()
     for comm in tqdm(communities):
         initial_membership = np.zeros(graph.vcount(), dtype=int)

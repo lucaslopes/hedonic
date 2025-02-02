@@ -57,7 +57,7 @@ Using pip install `-e .` installs the project in "editable" mode, which means an
 
 ## Usage
 
-The `hedonic.HedonicGame` class extends from `igraph.Graph`, inheriting all its methods and properties. This means you can use it in a similar way to how you use `igraph.Graph`, with additional functionality specific to hedonic games.
+The `hedonic.Game` class extends from `igraph.Graph`, inheriting all its methods and properties. This means you can use it in a similar way to how you use `igraph.Graph`, with additional functionality specific to hedonic games.
 
 Here's an example of how to use it:
 
@@ -66,8 +66,8 @@ Here's an example of how to use it:
 import hedonic as hd
 
 # Create a famous graph, like the Zachary's Karate Club graph
-G = hd.HedonicGame.Famous('Zachary')
-# G = hd.HedonicGame(graph)  # or if you already have an igraph.Graph object
+G = hd.Game.Famous('Zachary')
+# G = hd.Game(graph)  # or if you already have an igraph.Graph object
 
 # You can now detect communities using the `community_hedonic()` method:
 partition = G.community_hedonic()
@@ -78,7 +78,7 @@ accuracy = hd.compare_communities(partition, ground_truth, method='adjusted_rand
 print(f'Accuracy: {accuracy}')
 ```
 
-In this example, `G` is an instance of the `HedonicGame` class created from a famous graph, similar to how you would use `igraph.Graph.Famous`. The `HedonicGame` class inherits from `igraph.Graph`, so you can use all the standard `igraph.Graph` methods on `G` while also having access to additional methods specific to hedonic games, such as `community_hedonic()`.
+In this example, `G` is an instance of the `Game` class created from a famous graph, similar to how you would use `igraph.Graph.Famous`. The `Game` class inherits from `igraph.Graph`, so you can use all the standard `igraph.Graph` methods on `G` while also having access to additional methods specific to hedonic games, such as `community_hedonic()`.
 
 ## Contributing
 

@@ -59,7 +59,6 @@ def run_experiment(
     partition_seeds=[0],
     seed=42,
   ):
-  partition_seeds = [i for i in range(partition_seeds)] if isinstance(partition_seeds, int) else partition_seeds
   # for p_in in tqdm(probabilities, desc='p_in', leave=False):
   #   for multiplier in tqdm(difficulties, desc='multiplier', leave=False):
   g = generate_graph(number_of_communities, community_size, p_in, difficulty, seed)
@@ -116,7 +115,7 @@ def main():
   parser.add_argument('--p_in', type=float, nargs='+', required=False, help='Probability of edge within communities', default=[0.1])
   parser.add_argument('--difficulty', type=float, nargs='+', required=False, help='Difficulty of the problem', default=[0.5])
   parser.add_argument('--noises', type=float, nargs='+', required=False, help='Noise levels', default=[0.01, 0.25, 0.5, 0.6, 0.7, .75, 0.8, 0.85, 0.9, 0.95, 1.0, 1.1])
-  parser.add_argument('--partition_seeds', type=int, default=0, help='Seeds for initial partition')
+  parser.add_argument('--partition_seeds', type=int, nargs='+', default=[0], help='Seeds for initial partition')
   args = parser.parse_args()
 
   folder_name = args.folder_name # MainResultExperiment

@@ -10,7 +10,7 @@ seed=42
 n_communities = 2
 community_size = 500
 g = generate_graph(n_communities, community_size, 0.05, 0.4, seed)
-gt = get_ground_truth(g, n_communities, community_size)
+gt = get_ground_truth(n_communities, community_size, g)
 density = g.density()
 
 stopwatch.reset()
@@ -21,9 +21,9 @@ print('community_hedonic:', stopwatch.duration, g.in_equibrium(density), ig.comp
 
 stopwatch.reset()
 stopwatch.start()
-p2 = g.community_hedonic_old()
+p2 = g.community_hedonic_traversal()
 stopwatch.stop()
-print('community_hedonic_old:', stopwatch.duration, g.in_equibrium(density), ig.compare_communities(p2, gt, method="rand"))
+print('community_hedonic_traversal:', stopwatch.duration, g.in_equibrium(density), ig.compare_communities(p2, gt, method="rand"))
 
 
 stopwatch.reset()

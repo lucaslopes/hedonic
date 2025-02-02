@@ -11,33 +11,36 @@ import re
 #################################################
 
 def plot_heatmaps(df, max_value=None):
-  fig, axes = plt.subplots(3, 6, figsize=(20, 10), dpi=300) # (14, 7)
+  fig, axes = plt.subplots(3, 7, figsize=(21, 7), dpi=300) # (14, 7)
   method_names = {
-    'groundtruth': 'Groundtruth',
-    'hedonic': 'Hedonic',
-    'leiden': 'Leiden',
-    'multilevel': 'Louvain',
-    'leading': 'Spectral',
-    'local': 'L. Improve',}
+    'GroundTruth': 'GroundTruth',
+    'Hedonic': 'Hedonic',
+    'Leiden': 'Leiden',
+    'Louvain': 'Louvain',
+    'Spectral': 'Spectral',
+    'OnePass': 'OnePass',
+    'Mirror': 'Mirror',}
   value_columns = {
     'accuracy': 'Greens',
     'robustness': 'Blues',
-    'duration': 'YlOrBr',}
+    'efficiency': 'YlOrBr',}
   method_col = {
-    'groundtruth': 0,
-    'hedonic': 4,
-    'leiden': 3,
-    'multilevel': 2,
-    'leading': 1,
-    'local': 5,}
+    'GroundTruth': 0,
+    'Spectral': 1,
+    'Louvain': 2,
+    'Leiden': 3,
+    'Hedonic': 4,
+    'OnePass': 5,
+    'Mirror': 6,}
   value_row = {
-    'accuracy': 0,
+    'efficiency': 0,
     'robustness': 1,
-    'duration': 2,}
+    'accuracy': 2,
+    }
   for i, value_column in enumerate(value_columns):
     vmin = 0
-    # vmax = df['duration'].max() if max_value is None else max_value if value_column == 'duration' else 1
-    vmax = df[value_column].max() if value_column == 'duration' else 1
+    # vmax = df['efficiency'].max() if max_value is None else max_value if value_column == 'efficiency' else 1
+    vmax = df[value_column].max() if value_column == 'efficiency' else 1
     grouped_data = df.groupby(['method', 'p_in', 'multiplier'])[value_column].mean().reset_index()
     methods = grouped_data["method"].unique()
     for j, method in enumerate(methods):
@@ -75,10 +78,13 @@ def read_json_to_dataframe(directory_path):
 
 def main():
   frame_files = []
-  folder = 'FINAL_1020'
-  pth_base = f'/Users/lucas/Databases/Hedonic/ServerResult/{folder}'
+  folder = 'PHYSA_1000'
+  base = f'/Users/lucas/Databases/Hedonic/'
+  pth_base = f'{base}/{folder}'
   df = read_json_to_dataframe(pth_base)#config.experiment_params['output_results_path'])
-  vmax = df['duration'].max()
+  df.rename(columns={'duration': 'efficiency'}, inplace=True)
+  df.to_pickle(f"{base}/{folder}.pkl", compression="bz2")
+  vmax = df['efficiency'].max()
   df['noise'] = df['path'].apply(lambda x: float(re.search(r'/Noise = (\d+.*)/P_in*', x).group(1)))
   paths = {re.sub(r'/P_in = \d+.*', '', p) for p in df['path'].values}# if 'Clusters = 3' in p}
   paths = sorted(paths)

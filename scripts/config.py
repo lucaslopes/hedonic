@@ -1,13 +1,13 @@
 experiment_params = {
   'output_results_path': '~/Databases/hedonic/',
-  'samples': 2,
-  'number_of_communities': 5,
-  'community_size': 200,
-  'noise': 1,
+  'number_of_communities': 2,
+  'community_size': 1000,
+  'network_seeds': [i for i in range(100)],
+  'partition_seeds': [i for i in range(100)],
+  'noises': [0.01, 0.25, 0.5, 0.6, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95, 1.0, 1.1],
   'probabilities': [.10, .09, .08, .07, .06, .05, .04, .03, .02, .01],
   'difficulties': [.75, .7, .65, .6, .55, .5, .4, .3, .2, .1],
 }
-# experiment_params['output_results_path'] = f"~/Databases/hedonic/{experiment_params['number_of_communities']}C_{experiment_params['community_size']}N_4_methods_{len(experiment_params['probabilities'])}_probabilities_{len(experiment_params['difficulties'])}_difficulties"
 
 methods = {
   'GroundTruth': {
@@ -77,3 +77,6 @@ methods = {
     },
   },
 }
+
+# experiment_params['output_results_path'] = f"~/Databases/hedonic/{experiment_params['number_of_communities']}C_{experiment_params['community_size']}N_{len(methods)}_methods_{len(experiment_params['probabilities'])}_probabilities_{len(experiment_params['difficulties'])}_difficulties"
+experiment_params['output_results_path'] = f"~/Databases/hedonic/PHYSA_{experiment_params['community_size']*experiment_params['number_of_communities']}"
