@@ -337,18 +337,27 @@ class Game(Graph):
       nodes_info[node] = self.get_node_info(membership_list, community_counter, node)
     return nodes_info
 
-  def is_node_robust(self, node_info, membership_list, node):
+  @staticmethod
+  def is_node_robust(node_info, membership_list, node):
     max_friends_in_community = max([info['friends'] for info in node_info.values()])
     min_strangers_in_community = min([info['strangers'] for info in node_info.values()])
     is_maximal_friends = node_info[membership_list[node]]['friends'] == max_friends_in_community
     is_minimal_strangers = node_info[membership_list[node]]['strangers'] == min_strangers_in_community
     return is_maximal_friends and is_minimal_strangers
 
-  def get_nodes_robustness(self, nodes_info, membership_list):
-    return {node: self.is_node_robust(nodes_info[node], membership_list, node) for node in nodes_info}
+  @staticmethod
+  def get_nodes_robustness(nodes_info, membership_list):
+    return {node: Game.is_node_robust(nodes_info[node], membership_list, node) for node in nodes_info}
 
-  def get_robustness(self, nodes_robustness):
+  @staticmethod
+  def get_robustness(nodes_robustness):
     return sum(nodes_robustness.values()) / len(nodes_robustness)
+
+  @staticmethod
+  def get_partition_robustness(nodes_info, membership):
+    nodes_robustness = Game.get_nodes_robustness(nodes_info, membership)
+    robustness = Game.get_robustness(nodes_robustness)
+    return robustness
 
   def get_community_robustness(self, community, intra=False):
     membership_list = np.zeros(self.vcount(), dtype=int)
@@ -362,10 +371,14 @@ class Game(Graph):
     robustness = self.get_robustness(nodes_robustness)
     return robustness
 
-  def resolution_spectrum(self, membership, resolutions):
+  def resolution_spectrum(self, membership, resolutions=None, return_robustness=False):
+    resolutions = np.linspace(0, 1, 101) if resolutions is None else resolutions 
     nodes_info = self.get_nodes_info(membership)
+    robustness = Game.get_partition_robustness(nodes_info, membership)
     fractions = [Game.fraction_equilibrium_nodes(res, nodes_info, membership) for res in resolutions]
-    return fractions
+    if return_robustness:
+      return resolutions, fractions, robustness
+    return resolutions, fractions
 
   @staticmethod
   def fraction_equilibrium_nodes(resolution, nodes_info, membership):

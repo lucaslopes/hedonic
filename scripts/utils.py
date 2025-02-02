@@ -92,4 +92,4 @@ def generate_sequence(num: float, n: int) -> list:
     mid2 = (last_two[1] + num) / 2
     sequence.append(mid1)
     sequence.append(mid2)
-  return sequence[:n]
+  return sorted(sequence[:n])
