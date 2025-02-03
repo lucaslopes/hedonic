@@ -93,3 +93,4 @@ def generate_sequence(num: float, n: int) -> list:
     sequence.append(mid1)
     sequence.append(mid2)
   return sorted(sequence[:n])
+

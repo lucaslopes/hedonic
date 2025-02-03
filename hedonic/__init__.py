@@ -293,7 +293,8 @@ class Game(Graph):
     neighbors = self.neighbors(node)
     return Counter([membership[neighbor] for neighbor in neighbors])
 
-  def get_strangers_in_community(self, community_counter, neighbors_counter, node_membership):
+  @staticmethod
+  def get_strangers_in_community(community_counter, neighbors_counter, node_membership):
     """
     Returns a Counter with the number of strangers in each community.
     
@@ -321,7 +322,7 @@ class Game(Graph):
     node_membership = membership_list[node]
     neighbors_counter = self.get_neighbor_memberships(membership_list, node)
     neighbors_counter = {c: neighbors_counter[c] if c in neighbors_counter else 0 for c in community_counter}
-    strangers_counter = self.get_strangers_in_community(community_counter, neighbors_counter, node_membership)
+    strangers_counter = Game.get_strangers_in_community(community_counter, neighbors_counter, node_membership)
     node_info = dict()
     for c in strangers_counter:
       node_info[c] = {
@@ -330,24 +331,40 @@ class Game(Graph):
       }
     return node_info
 
-  def get_nodes_info(self, membership_list):
+  def get_nodes_info(self, membership_list, nodes_subset=None):
     community_counter = Counter(membership_list)
     nodes_info = dict()
-    for node in range(self.vcount()):
-      nodes_info[node] = self.get_node_info(membership_list, community_counter, node)
+    for node in self.vs.indices:
+      if nodes_subset is None or node in nodes_subset:
+        nodes_info[node] = self.get_node_info(membership_list, community_counter, node)
     return nodes_info
 
   @staticmethod
-  def is_node_robust(node_info, membership_list, node):
+  def classify_node_satisfaction(node_info, node_membership):
     max_friends_in_community = max([info['friends'] for info in node_info.values()])
     min_strangers_in_community = min([info['strangers'] for info in node_info.values()])
-    is_maximal_friends = node_info[membership_list[node]]['friends'] == max_friends_in_community
-    is_minimal_strangers = node_info[membership_list[node]]['strangers'] == min_strangers_in_community
-    return is_maximal_friends and is_minimal_strangers
+    robust_communities = set()
+    for community in node_info:
+      satisfy_max = node_info[community]['friends'] == max_friends_in_community
+      satisfy_min = node_info[community]['strangers'] == min_strangers_in_community
+      if satisfy_max and satisfy_min:
+        robust_communities.add(community)
+    if len(robust_communities) > 0:
+      satisfaction = 'always_satisfied'
+      if node_membership not in robust_communities:
+        satisfaction = 'never_satisfied' # because there exists a robust community that is not the node's community, so no matter the resolution, the node will never be satisfied
+    else:
+      satisfaction = 'relatively_satisfied' # it depends on the resolution
+    return satisfaction
 
   @staticmethod
-  def get_nodes_robustness(nodes_info, membership_list):
-    return {node: Game.is_node_robust(nodes_info[node], membership_list, node) for node in nodes_info}
+  def is_node_robust(node_info, membership, node):
+    satisfaction = Game.classify_node_satisfaction(node_info, membership[node])
+    return satisfaction == 'always_satisfied'
+
+  @staticmethod
+  def get_nodes_robustness(nodes_info, membership):
+    return {node: Game.is_node_robust(info, membership, node) for node, info in nodes_info.items()}
 
   @staticmethod
   def get_robustness(nodes_robustness):
@@ -359,23 +376,55 @@ class Game(Graph):
     robustness = Game.get_robustness(nodes_robustness)
     return robustness
 
-  def get_community_robustness(self, community, intra=False):
+  @staticmethod
+  def count_nodes_wanting_to_move(nodes_info, target_community):
+    count = 0
+    for info in nodes_info.values():
+      prefer_community = max(info, key=lambda c: info[c]['friends'])
+      if prefer_community == target_community:
+        count += 1
+    return count
+  
+  def evaluate_community_stability(self, community):
     membership_list = np.zeros(self.vcount(), dtype=int)
     nodes_in_community = set(community)
+    outer_neighbors = set()
     for n in nodes_in_community:
       membership_list[n] = 1
-    nodes_info = self.get_nodes_info(membership_list)
-    if intra:
-      nodes_info = {node: nodes_info[node] for node in nodes_in_community}
-    nodes_robustness = self.get_nodes_robustness(nodes_info, membership_list)
-    robustness = self.get_robustness(nodes_robustness)
-    return robustness
+      for neighbor in self.neighbors(n):
+        if neighbor not in nodes_in_community:
+            outer_neighbors.add(neighbor)
+    inside_nodes_info = self.get_nodes_info(membership_list, nodes_in_community)
+    outside_nodes_info = self.get_nodes_info(membership_list, outer_neighbors)
+    want_to_leave = Game.count_nodes_wanting_to_move(inside_nodes_info, 0)
+    want_to_join = Game.count_nodes_wanting_to_move(outside_nodes_info, 1)
+    fraction_want_to_leave = want_to_leave / len(nodes_in_community)
+    fraction_want_to_join = want_to_join / len(outer_neighbors)
+    return {
+      'fraction_want_to_leave': fraction_want_to_leave,
+      'fraction_want_to_join': fraction_want_to_join
+    }
 
   def resolution_spectrum(self, membership, resolutions=None, return_robustness=False):
     resolutions = np.linspace(0, 1, 101) if resolutions is None else resolutions 
     nodes_info = self.get_nodes_info(membership)
-    robustness = Game.get_partition_robustness(nodes_info, membership)
-    fractions = [Game.fraction_equilibrium_nodes(res, nodes_info, membership) for res in resolutions]
+    nodes_satisfaction = [Game.classify_node_satisfaction(info, membership[node]) for node, info in nodes_info.items()]
+    satisfaction_count = Counter(nodes_satisfaction)
+    robustness = satisfaction_count['always_satisfied'] / len(nodes_satisfaction)
+    if satisfaction_count['relatively_satisfied'] == 0:
+      fractions = [robustness] * len(resolutions)
+    else:
+      fractions = list()
+      for res in resolutions:
+        satisfied_nodes = 0
+        for node, satisfaction in enumerate(nodes_satisfaction):
+          if satisfaction == 'always_satisfied':
+            satisfied_nodes += 1
+          elif satisfaction == 'relatively_satisfied':
+            node_potential = Game.get_node_potential(nodes_info[node], res)
+            if Game.is_node_in_equilibrium(membership[node], node_potential):
+              satisfied_nodes += 1
+        fractions.append(satisfied_nodes / len(membership))
     if return_robustness:
       return resolutions, fractions, robustness
     return resolutions, fractions
@@ -383,7 +432,7 @@ class Game(Graph):
   @staticmethod
   def fraction_equilibrium_nodes(resolution, nodes_info, membership):
     nodes_potential = Game.get_nodes_potential(nodes_info, resolution)
-    nodes_equilibrium = Game.is_node_in_equilibrium(nodes_potential, membership)
+    nodes_equilibrium = Game.are_nodes_in_equilibrium(nodes_potential, membership)
     fraction = sum(nodes_equilibrium.values()) / len(nodes_equilibrium)
     return fraction
 
@@ -392,7 +441,7 @@ class Game(Graph):
     node_potential = dict()
     for community, counts in node_info.items():
       pros = counts['friends'] * (1-resolution)
-      cons = counts['strangers'] * -resolution
+      cons = counts['strangers'] * resolution
       node_potential[community] = pros - cons
     return node_potential
 
@@ -404,12 +453,15 @@ class Game(Graph):
     return nodes_potential
 
   @staticmethod
-  def is_node_in_equilibrium(nodes_potential, membership_list):
+  def is_node_in_equilibrium(node_comm, potentials):
+    best = max(potentials.values())
+    return best == potentials[node_comm]
+
+  @staticmethod
+  def are_nodes_in_equilibrium(nodes_potential, membership_list):
     nodes_equilibrium = dict()
     for node, potentials in nodes_potential.items():
-      node_comm = membership_list[node]
-      best = max(potentials.values())
-      nodes_equilibrium[node] = best == potentials[node_comm]
+      nodes_equilibrium[node] = Game.is_node_in_equilibrium(membership_list[node], potentials)
     return nodes_equilibrium
 
   @staticmethod
@@ -418,7 +470,7 @@ class Game(Graph):
     resolutions = np.linspace(0, 1, 11)
     for res in resolutions:
       nodes_potential = Game.get_nodes_potential(nodes_info, res)
-      nodes_equilibrium = Game.is_node_in_equilibrium(nodes_potential, membership_list)
+      nodes_equilibrium = Game.are_nodes_in_equilibrium(nodes_potential, membership_list)
       fraction = sum(nodes_equilibrium.values()) / len(nodes_equilibrium)
       fractions.append(fraction)
     return resolutions, fractions

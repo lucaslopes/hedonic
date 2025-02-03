@@ -2,8 +2,9 @@ import time
 import gzip
 import numpy as np
 import igraph as ig
+import pandas as pd
+from hedonic import Game
 from tqdm import tqdm
-from node_robust import *
 
 
 def read_txt_gz_to_igraph(file_path):
@@ -69,11 +70,17 @@ def get_accuracy(graph, communities, noise=0.):
 def main():
     file_path = '/Users/lucas/Databases/Hedonic/Networks/DBLP/com-dblp.ungraph.txt.gz'
     graph = read_txt_gz_to_igraph(file_path)
-    print(graph.summary())
-    communities_path = '/Users/lucas/Databases/Hedonic/Networks/DBLP/com-dblp.top5000.cmty.txt.gz'
+    g = Game(graph)
+    print(g.summary())
+    # communities_path = '/Users/lucas/Databases/Hedonic/Networks/DBLP/com-dblp.top5000.cmty.txt.gz'
+    communities_path = '/Users/lucas/Databases/Hedonic/Networks/DBLP/com-dblp.all.cmty.txt.gz'
     communities = read_communities(communities_path)
-    robustness = [get_community_robustness(graph, communities[i], intra=True) for i in range(10)]
-    print(robustness)
+    robustness = [g.evaluate_community_stability(communities[i]) for i in tqdm(range(len(communities)))]
+    df = pd.DataFrame(robustness)
+    df.index.name = 'community_index'
+    output_path = communities_path.replace(communities_path.split('/')[-1], 'fraction_stability.csv')
+    df.to_csv(output_path)
+    
     
     # accuracy_hedonic, accuracy_leiden, times_hedonic, times_leiden = get_accuracy(graph, communities[:10], noise=0.)
     # print(accuracy_hedonic)

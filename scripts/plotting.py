@@ -3,7 +3,6 @@ import cv2
 import json
 import config
 import pandas as pd
-import seaborn as sns
 from tqdm import tqdm
 from matplotlib import pyplot as plt
 import re
