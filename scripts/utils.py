@@ -1,8 +1,45 @@
+import gzip
 import numpy as np
 import igraph as ig
 from collections import defaultdict
 from hedonic import Game
 from networkx.generators.community import stochastic_block_model as SBM
+
+def read_txt_gz_to_igraph(file_path):
+  edges = []
+  with gzip.open(file_path, 'rt') as file:  # 'rt' mode for text mode reading
+    for line in file:
+      if line.startswith('#'):  # Skip comment lines
+        continue
+      # Split line into source and target node IDs and convert to integers
+      nodes = list(map(int, line.strip().split()))
+      if len(nodes) == 2:
+        source, target = nodes
+        edges.append((source, target))
+      else:
+        print(line, nodes)
+  # Assuming the file contains an edge list with each line as 'source target'
+  graph = ig.Graph(edges=edges, directed=False)
+  return graph
+
+def read_communities(file_path, mode='list_of_communities'):
+  communities = []
+  with gzip.open(file_path, 'rt') as file:  # 'rt' mode for text mode reading
+    for line in file:
+      if mode == 'list_of_communities':
+        nodes = list(map(int, line.strip().split()))
+        communities.append(nodes)
+      elif mode == 'node_labels':
+        node, community = map(int, line.strip().split())
+        communities.append((node, community))
+  if mode == 'node_labels':
+    communities = dict()
+    for node, community in communities:
+      try:
+        communities[community].add(node)
+      except:
+        communities[community] = set({node})
+  return communities
 
 def probs_matrix(n_communities, p, q):
   probs = np.full((n_communities, n_communities), q) # fill with q

@@ -385,6 +385,12 @@ class Game(Graph):
         count += 1
     return count
   
+  def community_to_partition(self, community):
+    partition = np.zeros(self.vcount(), dtype=int)
+    for n in set(community):
+      partition[n] = 1
+    return partition
+  
   def evaluate_community_stability(self, community):
     membership_list = np.zeros(self.vcount(), dtype=int)
     nodes_in_community = set(community)
@@ -405,7 +411,7 @@ class Game(Graph):
       'fraction_want_to_join': fraction_want_to_join
     }
 
-  def resolution_spectrum(self, membership, resolutions=None, return_robustness=False):
+  def resolution_spectrum(self, membership, resolutions=None, return_robustness=True):
     resolutions = np.linspace(0, 1, 101) if resolutions is None else resolutions 
     nodes_info = self.get_nodes_info(membership)
     nodes_satisfaction = [Game.classify_node_satisfaction(info, membership[node]) for node, info in nodes_info.items()]
