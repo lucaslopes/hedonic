@@ -49,7 +49,7 @@ for file_path in tqdm(paths):
         if node_satisfaction == 'relatively_satisfied':
             print(node, info)
 
-    # resolutions, fractions, robustness = g.resolution_spectrum(membership, np.linspace(0, 1, 1001), return_robustness=True)
+    # resolutions, fractions, robustness = g.resolution_spectrum(membership, np.linspace(0, 1, 1001))
 
 
     # nodes_info = g.get_nodes_info(membership)

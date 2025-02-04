@@ -26,7 +26,7 @@ def process_file(pth, membership, n_resolutions=2):
     #     print(f"Skipping {pth}, output files already exist.")
     #     return
     
-    resolutions, fractions, robustness = g.resolution_spectrum(membership, np.linspace(0, 1, n_resolutions), return_robustness=True)
+    resolutions, fractions, robustness = g.resolution_spectrum(membership, np.linspace(0, 1, n_resolutions))
     df = pd.DataFrame({
         'resolutions': resolutions,
         'fractions': fractions
@@ -90,7 +90,7 @@ __name__ == '__main__' and main()
 #     g = pickle.load(f)
 # V = 2000
 # membership = [0 if i < int(V/2) else 1 for i in range(V)]
-# resolutions, fractions, robustness = g.resolution_spectrum(membership, np.linspace(0, 1, 1001), return_robustness=True)
+# resolutions, fractions, robustness = g.resolution_spectrum(membership, np.linspace(0, 1, 1001))
 # nodes_info = g.get_nodes_info(membership)
 # for res in resolutions:
 #     satisfied = 0

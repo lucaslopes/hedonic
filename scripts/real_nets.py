@@ -5,7 +5,10 @@ import pandas as pd
 import utils
 from hedonic import Game
 from tqdm import tqdm
+from concurrent.futures import ProcessPoolExecutor
 
+# Global variable to hold the Game instance accessible in worker processes
+global_g = None
 
 def get_accuracy(graph, communities, noise=0.):
     accuracy_hedonic, accuracy_leiden = list(), list()
@@ -29,8 +32,7 @@ def get_accuracy(graph, communities, noise=0.):
 
 
 def run_frac_leave_and_join(file_path):
-    graph = utils.read_txt_gz_to_igraph(file_path)
-    g = Game(graph)
+    g = Game(utils.read_txt_gz_to_igraph(file_path))
     print(g.summary())
     # communities_path = '/Users/lucas/Databases/Hedonic/Networks/DBLP/com-dblp.top5000.cmty.txt.gz'
     communities_path = '/Users/lucas/Databases/Hedonic/Networks/DBLP/com-dblp.all.cmty.txt.gz'
@@ -46,18 +48,37 @@ def run_frac_leave_and_join(file_path):
     # print(times_hedonic)
     # print(times_leiden)
 
+def compute_spectrum(partition):
+    return global_g.resolution_spectrum(partition)
 
-def run_resolution_spectrum():
-    file_path = '/Users/lucas/Databases/Hedonic/Networks/DBLP/com-dblp.ungraph.txt.gz'
-    graph = utils.read_txt_gz_to_igraph(file_path)
-    g = Game(graph)
-    print(g.summary())
-    communities_path = '/Users/lucas/Databases/Hedonic/Networks/DBLP/com-dblp.top5000.cmty.txt.gz'
-    # communities_path = '/Users/lucas/Databases/Hedonic/Networks/DBLP/com-dblp.all.cmty.txt.gz'
+def compute_spectrum_wrapper(comm):
+    # Convert community to partition within the worker process
+    partition = global_g.community_to_partition(comm)
+    return compute_spectrum(partition)
+
+def init_worker(g):
+    # Initializer function to set up the global_g in each worker
+    global global_g
+    global_g = g
+
+def run_resolution_spectrum(file_path):
+    global global_g  # Reference to the global variable in the main process
+    # Load the graph and assign to global_g
+    global_g = Game(utils.read_txt_gz_to_igraph(file_path))
+    print(global_g.summary())
+    
+    communities_path = '/Users/lucas/Databases/Hedonic/Networks/DBLP/com-dblp.all.cmty.txt.gz'
     communities = utils.read_communities(communities_path)
-    partitions = [g.community_to_partition(comm) for comm in communities]
-    spectrum = [g.resolution_spectrum(p, [0,1]) for p in tqdm(partitions)]
-    dfs = list()
+
+    # Use a generator to stream communities instead of loading all at once if possible
+    # For this example, assuming communities is a list that fits in memory
+    
+    # Using ProcessPoolExecutor with initializer to pass the global_g to workers
+    with ProcessPoolExecutor(max_workers=1, initializer=init_worker, initargs=(global_g,)) as executor:
+        spectrum = list(tqdm(executor.map(compute_spectrum_wrapper, communities, chunksize=10), total=len(communities)))
+
+    # Process results and save as before
+    dfs = []
     for idx, spectra in enumerate(spectrum):
         resolutions, fractions, robustness = spectra
         df = pd.DataFrame({
@@ -71,13 +92,10 @@ def run_resolution_spectrum():
     output_path = communities_path.replace(communities_path.split('/')[-1], 'resolution_spectra.csv')
     df.to_csv(output_path)
 
-
 def main():
     file_path = '/Users/lucas/Databases/Hedonic/Networks/DBLP/com-dblp.ungraph.txt.gz'
     # run_frac_leave_and_join(file_path)
-    run_resolution_spectrum()
-
+    run_resolution_spectrum(file_path)
 
 if __name__ == "__main__":
     main()
-
