@@ -1,4 +1,5 @@
 import numpy as np
+from tqdm import tqdm
 from collections import Counter
 from igraph import Graph, compare_communities
 from igraph.clustering import VertexClustering
@@ -216,12 +217,9 @@ class Game(Graph):
   def community_hedonic_queue(self, resolution=None, initial_membership=None, log_memberships=False):
     resolution = resolution if resolution else self.density()
     self['log_memberships'] = []
-    print("Initializing game...")
     self.initialize_game(initial_membership)
-    print("Running hedonic game...")
     while not self.in_equibrium(resolution):
       # Initialize the queue with all nodes
-      print("Initializing queue...")
       queue = [node.index for node in self.vs]
       in_queue = set(queue)  # Track nodes in the queue to avoid duplicates
       
@@ -279,64 +277,64 @@ class Game(Graph):
       self.move_node_to_community(self.vs[node], community)
     return VertexClustering(self, self.membership())
 
-  def get_neighbor_memberships(self, membership, node):
-    """
-    Returns a list of memberships for all neighbors of the given node.
-    
-    Parameters:
-    membership (list): List of community memberships for all nodes
-    node (int): The node ID to get neighbors' memberships for
-    
-    Returns:
-    list: List of memberships of the node's neighbors
-    """
-    neighbors = self.neighbors(node)
-    return Counter([membership[neighbor] for neighbor in neighbors])
-
-  @staticmethod
-  def get_strangers_in_community(community_counter, neighbors_counter, node_membership):
-    """
-    Returns a Counter with the number of strangers in each community.
-    
-    Parameters:
-    community_counter (Counter): Counter of memberships for all nodes
-    neighbors_counter (Counter): Counter of memberships for all neighbors of the given node
-    node_membership (int): Community membership of the node
-    
-    Returns:
-    Counter: Counter of the number of strangers in each community
-    """
-    strangers_counter = Counter()
-
-    for c, f in neighbors_counter.items():
-      strangers_in_community = community_counter[c] - f
-      if node_membership == c:
-        strangers_in_community -= 1
-      strangers_counter[c] = strangers_in_community
-
-    return strangers_counter
-
-  def get_node_info(self, membership_list, community_counter, node):
-    """
-    """
-    node_membership = membership_list[node]
-    neighbors_counter = self.get_neighbor_memberships(membership_list, node)
-    neighbors_counter = {c: neighbors_counter[c] if c in neighbors_counter else 0 for c in community_counter}
-    strangers_counter = Game.get_strangers_in_community(community_counter, neighbors_counter, node_membership)
-    node_info = dict()
-    for c in strangers_counter:
-      node_info[c] = {
-        'friends': neighbors_counter[c],
-        'strangers': strangers_counter[c]
-      }
-    return node_info
-
   def get_nodes_info(self, membership_list, nodes_subset=None):
+    """
+    Computes for each node (in nodes_subset or all nodes) a dictionary of community-based friend
+    and stranger counts by iterating once over all edges of the graph.
+
+    For each node, for every community 'c', the number of friends is the number of neighbors
+    in community 'c'. The number of strangers is computed as:
+    
+        strangers = (total nodes in community c) - (friend count in c) - (1 if the node itself is in c else 0)
+    
+    Parameters:
+        graph (ig.Graph): The input graph.
+        membership_list (list): A list where the i-th element is the community membership of node i.
+        nodes_subset (iterable, optional): An iterable of node indices for which to compute info.
+            If None, info is computed for all nodes.
+    
+    Returns:
+        dict: A dictionary mapping each node (from nodes_subset) to a dictionary that maps each
+              community to a dict with keys 'friends' and 'strangers'.
+    """
+    # Total count of nodes per community.
     community_counter = Counter(membership_list)
-    nodes_info = dict()
-    for node in self.vs.indices:
-      if nodes_subset is None or node in nodes_subset:
-        nodes_info[node] = self.get_node_info(membership_list, community_counter, node)
+    
+    # Determine which nodes to process.
+    if nodes_subset is None:
+        nodes_subset = set(self.vs.indices)
+    else:
+        nodes_subset = set(nodes_subset)
+    
+    # Initialize friend counts for each node in nodes_subset.
+    # Each value is a Counter mapping community -> friend count.
+    friends_counts = {node: Counter() for node in nodes_subset}
+    
+    # Iterate over each edge once.
+    for u, v in self.get_edgelist():
+      # If u is in the subset, increment its friend count for v's community.
+      if u in nodes_subset:
+        friends_counts[u][membership_list[v]] += 1
+      # Similarly, if v is in the subset, increment its friend count for u's community.
+      if v in nodes_subset:
+        friends_counts[v][membership_list[u]] += 1
+    
+    # Build the nodes_info dictionary.
+    nodes_info = {}
+    for node in friends_counts:
+      node_membership = membership_list[node]
+      node_info = {}
+      # Ensure every community is represented, even if the friend count is 0.
+      for community, total in community_counter.items():
+        friend_count = friends_counts[node].get(community, 0)
+        # If the node is in community 'community', subtract one (to exclude the node itself).
+        stranger_count = total - friend_count - (1 if community == node_membership else 0)
+        node_info[community] = {
+          'friends': friend_count,
+          'strangers': stranger_count
+        }
+      nodes_info[node] = node_info
+    
     return nodes_info
 
   @staticmethod
@@ -416,21 +414,16 @@ class Game(Graph):
     nodes_info = self.get_nodes_info(membership)
     nodes_satisfaction = [Game.classify_node_satisfaction(info, membership[node]) for node, info in nodes_info.items()]
     satisfaction_count = Counter(nodes_satisfaction)
-    robustness = satisfaction_count['always_satisfied'] / len(nodes_satisfaction)
+    always_satisfied = satisfaction_count['always_satisfied']
+    robustness = always_satisfied / len(nodes_satisfaction)
     if satisfaction_count['relatively_satisfied'] == 0:
       fractions = [robustness] * len(resolutions)
     else:
-      fractions = list()
-      for res in resolutions:
-        satisfied_nodes = 0
-        for node, satisfaction in enumerate(nodes_satisfaction):
-          if satisfaction == 'always_satisfied':
-            satisfied_nodes += 1
-          elif satisfaction == 'relatively_satisfied':
-            node_potential = Game.get_node_potential(nodes_info[node], res)
-            if Game.is_node_in_equilibrium(membership[node], node_potential):
-              satisfied_nodes += 1
-        fractions.append(satisfied_nodes / len(membership))
+      nodes_in_doubt = [node for node, satisfaction in enumerate(nodes_satisfaction) if satisfaction == 'relatively_satisfied']
+      nodes_info_subset = {node: nodes_info[node] for node in nodes_in_doubt}
+      potentials, nodes, communities = Game.get_nodes_potential(nodes_info_subset, resolutions)
+      nodes_eq = Game.is_in_equilibrium(membership, potentials, nodes, communities, return_dict=True)
+      fractions = (sum(nodes_eq.values()) + always_satisfied) / len(membership)
     if return_robustness:
       return resolutions, fractions, robustness
     return resolutions, fractions
@@ -452,11 +445,67 @@ class Game(Graph):
     return node_potential
 
   @staticmethod
-  def get_nodes_potential(nodes_info, resolution=1):
-    nodes_potential = dict()
-    for node, info in nodes_info.items():
-      nodes_potential[node] = Game.get_node_potential(info, resolution)
-    return nodes_potential
+  def get_nodes_potential(nodes_info, resolutions=1):
+    """
+    Compute the potential of each node for one or more resolution values in a vectorized manner.
+
+    For each node and each community, the potential is defined as:
+      potential = friends * (1 - resolution) - strangers * resolution
+    where "friends" and "strangers" are the counts provided in nodes_info.
+
+    Parameters:
+      nodes_info (dict):
+        A dictionary mapping node IDs to dictionaries that map community IDs to 
+        a dict with keys 'friends' and 'strangers'. For example:
+          {
+            0: {0: {'friends': 3, 'strangers': 7}, 1: {'friends': 2, 'strangers': 5}},
+            1: {0: {'friends': 4, 'strangers': 6}, 1: {'friends': 1, 'strangers': 8}},
+            ...
+          }
+      resolutions (float or array-like):
+        A scalar or an array of resolution values in the interval [0, 1].
+
+    Returns:
+      potentials: If multiple resolutions are provided, an array of shape 
+        (num_resolutions, num_nodes, num_communities) with the computed potentials.
+        If a single resolution is provided, a 2D array of shape (num_nodes, num_communities).
+      nodes (list):
+        Sorted list of node IDs (rows in the resulting arrays).
+      communities (list):
+        Sorted list of community IDs (columns in the resulting arrays).
+    """
+    # Extract sorted lists of nodes and communities.
+    nodes = sorted(nodes_info.keys())
+    # Assume each node_info has the same set of communities.
+    communities = sorted(next(iter(nodes_info.values())).keys())
+    
+    num_nodes = len(nodes)
+    num_communities = len(communities)
+    
+    # Build arrays for friends and strangers counts.
+    friends = np.empty((num_nodes, num_communities), dtype=float)
+    strangers = np.empty((num_nodes, num_communities), dtype=float)
+    
+    for i, node in enumerate(nodes):
+      for j, comm in enumerate(communities):
+        counts = nodes_info[node][comm]
+        friends[i, j] = counts['friends']
+        strangers[i, j] = counts['strangers']
+    
+    # Ensure resolutions is a NumPy array.
+    resolutions = np.atleast_1d(resolutions).astype(float)
+    # Reshape resolutions to allow broadcasting: shape (num_res, 1, 1)
+    res = resolutions[:, None, None]
+    
+    # Compute potentials for each resolution, node, and community:
+    # potential = friends*(1 - resolution) - strangers*(resolution)
+    potentials = friends[None, :, :] * (1 - res) - strangers[None, :, :] * res
+    
+    # If a single resolution was provided, return a 2D array instead of 3D.
+    if potentials.shape[0] == 1:
+      potentials = potentials[0]
+    
+    return potentials, nodes, communities
 
   @staticmethod
   def is_node_in_equilibrium(node_comm, potentials):
@@ -481,5 +530,104 @@ class Game(Graph):
       fractions.append(fraction)
     return resolutions, fractions
 
+  @staticmethod
+  def is_in_equilibrium(membership_list, potentials, nodes, communities,
+                                 node_ids=None, resolution_ids=None, return_dict=False):
+    """
+    Check the equilibrium status for multiple nodes and resolutions in a fully vectorized manner.
+    
+    A node is in equilibrium at a given resolution if the potential for its own community
+    is (approximately) equal to the maximum potential over all communities for that node.
+    
+    Parameters:
+      membership_list (list): Global list (indexed by node id) of each node's community.
+      potentials (np.ndarray): Either a 3D array of shape 
+        (num_resolutions, num_nodes, num_communities) or a 2D array 
+        (num_nodes, num_communities) for a single resolution.
+      nodes (list): Sorted list of node IDs corresponding to the second axis of potentials.
+      communities (list): Sorted list of community IDs corresponding to the third axis of potentials.
+      node_ids (int, list, or None): Node id(s) to check. If None, all nodes in `nodes` are considered.
+      resolution_ids (int, list, or None): Resolution index/indices to check.
+        If None, all resolutions are used.
+      return_dict (bool): If True, returns a dict mapping each node id to its equilibrium status.
+        Otherwise, returns a tuple (eq_status, node_ids_array, resolution_ids_array), where:
+          - eq_status is a NumPy boolean array of shape (num_resolutions, num_selected_nodes) (or 1D if only one resolution)
+          - node_ids_array and resolution_ids_array are the used indices.
+    
+    Returns:
+      Either a dictionary mapping node ids to equilibrium status (boolean or boolean vector)
+      or a tuple (eq_status, node_ids_array, resolution_ids_array).
+      
+    Raises:
+      ValueError: If any specified resolution index is out of bounds.
+    """
+    # Ensure potentials is a NumPy array.
+    potentials = np.asarray(potentials)
+    if potentials.ndim == 2:
+      # Convert to 3D with one resolution.
+      potentials = potentials[None, :, :]
+    num_res, num_nodes, num_comms = potentials.shape
 
+    # Process resolution_ids.
+    if resolution_ids is None:
+      resolution_ids = np.arange(num_res)
+    else:
+      if isinstance(resolution_ids, int):
+        resolution_ids = np.array([resolution_ids])
+      else:
+        resolution_ids = np.array(resolution_ids)
+      if np.any(resolution_ids < 0) or np.any(resolution_ids >= num_res):
+        raise ValueError(f"resolution_ids must be between 0 and {num_res - 1}.")
+
+    # Process node_ids.
+    if node_ids is None:
+      # Use all nodes as given by the ordering in 'nodes'.
+      node_ids = np.array(nodes)
+      node_indices = np.arange(len(nodes))
+    else:
+      if isinstance(node_ids, int):
+        node_ids = np.array([node_ids])
+      else:
+        node_ids = np.array(node_ids)
+      # Create a mapping from node id to its index in the sorted list.
+      node_to_index = {n: i for i, n in enumerate(nodes)}
+      node_indices = np.array([node_to_index[n] for n in node_ids])
+    
+    # Create a mapping for communities (from community value to its column index).
+    comm_to_index = {c: i for i, c in enumerate(communities)}
+    # For each selected node, map its community (from membership_list) to a community index.
+    own_comm_indices = np.array([comm_to_index[membership_list[n]] for n in node_ids])
+    
+    # Slice potentials for the selected resolutions and nodes.
+    # This gives an array of shape (len(resolution_ids), len(node_ids), num_comms).
+    subpotentials = potentials[resolution_ids][:, node_indices, :]
+    
+    # Compute the maximum potential across communities for each (resolution, node).
+    # Shape: (len(resolution_ids), len(node_ids))
+    max_potentials = subpotentials.max(axis=2)
+    
+    # Build index arrays for the resolutions and nodes.
+    n_res = len(resolution_ids)
+    n_sel = len(node_ids)
+    res_idx = np.arange(n_res)[:, None]   # shape (n_res, 1)
+    node_idx = np.arange(n_sel)[None, :]    # shape (1, n_sel)
+    # Use fancy indexing to select the potential corresponding to each node's own community.
+    # own_comm_indices is (n_sel,) and we want to broadcast it to shape (n_res, n_sel).
+    own_potentials = subpotentials[res_idx, node_idx, own_comm_indices[None, :]]
+    
+    # Check equilibrium: node is in equilibrium if its own potential equals the maximum (within tolerance).
+    eq_status = np.isclose(own_potentials, max_potentials)
+    
+    # If only one resolution is selected, squeeze the resolution axis.
+    if eq_status.shape[0] == 1:
+      eq_status = eq_status[0]
+    
+    if return_dict:
+      # Create a dictionary mapping each node id to its equilibrium status.
+      # If multiple resolutions are used, each value is a boolean array.
+      result = {node: (eq_status[:, i] if eq_status.ndim == 2 else bool(eq_status[i]))
+                for i, node in enumerate(node_ids)}
+      return result
+    else:
+      return eq_status, node_ids, resolution_ids
 
