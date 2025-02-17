@@ -1,4 +1,5 @@
 import time
+import pickle
 import argparse
 import numpy as np
 import igraph as ig
@@ -7,6 +8,7 @@ import utils
 from tqdm import tqdm
 from hedonic import Game
 from concurrent.futures import ProcessPoolExecutor
+import os
 
 # Global variable to hold the Game instance accessible in worker processes
 global_g = None
@@ -117,56 +119,70 @@ def run_resolution_spectrum_parallel(file_path, use_parallel=True, ignore_first=
     output_path = communities_path.replace(communities_path.split('/')[-1], 'resolution_spectra.csv')
     df.to_csv(output_path)
 
-
 def run_resolution_spectrum(file_path, ignore_first=None, ignore_last=None, first=None, last=None):
-    g = Game(utils.read_txt_gz_to_igraph(file_path))
-    n_vertices_before = len(g.vs)
-    g.vs.select(_degree_eq=0).delete()
-    n_vertices_after = len(g.vs)
-    print(f"Deleted {n_vertices_before - n_vertices_after} isolated vertices")
+    
+    pickle_path = file_path.replace('.txt.gz', '.pkl')
+    if os.path.exists(pickle_path):
+        with open(pickle_path, 'rb') as f:
+            g = pickle.load(f)
+    else:
+        g = Game(utils.read_txt_gz_to_igraph(file_path))
+        g.vs["label"] = list(range(g.vcount()))
+        g.delete_vertices(g.vs.select(_degree_eq=0))
+        with open(pickle_path, 'wb') as f:
+            # TODO: this should be done in other process
+            pickle.dump(g, f)
 
-    communities_path = '/Users/lucas/Databases/Hedonic/Networks/DBLP/com-dblp.all.cmty.txt.gz'
+    def get_new_index(old_index):
+        # TODO: save communities with updated indices as pkl
+        return g.vs.find(label=old_index).index
+
+    resolutions = np.sort(np.unique(np.concatenate((np.linspace(1e-6, 1e-4, 201), np.linspace(1e-4, 1e-3, 21), np.linspace(1e-3, 1e-2, 11), np.linspace(1e-2, .1, 6), np.linspace(.1, 1, 6)))))
+    # communities_path = '/Users/lucas/Databases/Hedonic/Networks/DBLP/com-dblp.all.cmty.txt.gz'
+    communities_path = '/Users/lucas/Databases/Hedonic/Networks/DBLP/com-dblp.top5000.cmty.txt.gz'
     communities = utils.read_communities(communities_path)
+    output_dir = communities_path.replace(communities_path.split('/')[-1], 'resolution_spectra')
+    os.makedirs(output_dir, exist_ok=True)
 
+    original_indices = list(range(len(communities)))
     if ignore_first:
         n = int(len(communities) * (ignore_first / 100))
         communities = communities[n:]
+        original_indices = original_indices[n:]
     if ignore_last:
         n = int(len(communities) * (ignore_last / 100))
         communities = communities[:-n]
+        original_indices = original_indices[:-n]
 
     if first:
         n = int(len(communities) * (first / 100))
         communities = communities[:n]
+        original_indices = original_indices[:n]
     elif last:
         n = int(len(communities) * (last / 100))
         communities = communities[-n:]
+        original_indices = original_indices[-n:]
 
-    pbar = tqdm(total=len(communities), desc="Communities", position=0)
-    spectrum = []
-    for comm in communities:
-        partition = g.community_to_partition(comm)
-        spectra = g.resolution_spectrum(partition)
-        spectrum.append(spectra)
-        pbar.update(1)
-    pbar.close()
+    def get_file_path(idx):
+        return os.path.join(output_dir, f'resolution_spectra_{original_indices[idx]}.csv')
 
-    # Process results and save as before
-    dfs = []
-    for idx, spectra in enumerate(spectrum):
-        resolutions, fractions, robustness = spectra
+    communities = [(original_indices[i], comm) for i, comm in enumerate(communities) if not os.path.exists(get_file_path(i))]  # Filter communities that already have files(len(communities)):
+    if len(communities) == 0:
+        return
+
+    for idx, comm in tqdm(communities, desc="Communities"):
+        c = [get_new_index(i) for i in comm]
+        partition = g.community_to_partition(c)
+        resolutions, fractions = g.resolution_spectrum(partition, resolutions, return_robustness=False)
         df = pd.DataFrame({
             'resolutions': resolutions,
             'fractions': fractions
-        }).round(5)
-        df['community_index'] = idx
-        df['robustness'] = robustness
-        dfs.append(df)
-    df = pd.concat(dfs)
-    df = df.round(5)
-    df = df[['community_index', 'resolutions', 'fractions', 'robustness']]
-    output_path = communities_path.replace(communities_path.split('/')[-1], 'resolution_spectra.csv')
-    df.to_csv(output_path)
+            # fraction_want_to_leave': fraction_want_to_leave, # TODO: implement
+            # 'fraction_want_to_join': fraction_want_to_join
+        })
+        df['community_index'] = idx  # Use the correct original index
+        df = df.round(10)[['community_index', 'resolutions', 'fractions']]
+        df.to_csv(get_file_path(idx), index=False)
 
 
 def main():

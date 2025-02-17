@@ -1,9 +1,43 @@
+import os
 import gzip
+import pickle
 import numpy as np
 import igraph as ig
+from pathlib import Path
 from collections import defaultdict
-from hedonic import Game
 from networkx.generators.community import stochastic_block_model as SBM
+from hedonic import Game
+
+
+def network_path_to_memberships_path(pth: str) -> str:
+  l = pth.split('/')
+  index = l.index('networks')
+  l[index] = 'memberships'
+  return'/'.join(l[:index+2])
+
+
+def get_all_subpaths(path: str, endswith:str = '.csv') -> list[str]:
+  paths = []
+  for root, _, files in os.walk(path):
+    for file in files:
+      if file.endswith(endswith):
+        paths.append(os.path.join(root, file))
+  paths.sort()
+  return paths
+
+
+def read_csv_partition(partition_path: str) -> list[int]:
+  with open(partition_path, 'r') as f:
+    return [int(x) for x in f.read().strip().split(',')]
+
+
+def read_pickle(graph_path: str, verbose: bool = False) -> Game:
+  with open(graph_path, 'rb') as f:
+    if verbose:
+      print(f"Loading graph from: `{graph_path}`")
+    g = pickle.load(f)
+  return g
+
 
 def read_txt_gz_to_igraph(file_path):
   edges = []

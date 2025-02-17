@@ -1,3 +1,4 @@
+import re
 import os
 import json
 import config
@@ -7,7 +8,7 @@ import igraph as ig
 from tqdm import tqdm
 from stopwatch import Stopwatch
 from hedonic import Game
-from utils import generate_graph, get_ground_truth, get_initial_membership
+from utils import read_pickle, get_ground_truth, get_all_subpaths, network_path_to_memberships_path, read_csv_partition
 
 #################################################
 
@@ -31,8 +32,7 @@ def get_method_result(
     print(f"\nPARTITIONING ERROR:\n{e}\n{method_name=}\n{p_in=}\n{multiplier=}\n{community_size=}\n{number_of_communities=}")
   stopwatch.stop()
   accuracy = g.accuracy(partition, ground_truth) # calculate accuracy wrt the ground truth
-  # accuracy_edges = g.accuracy_classify_edges(partition, ground_truth) # calculate accuracy wrt the ground truth
-  robustness = g.robustness(partition) # calculate robustness
+  robustness = g.partition_robustness(partition.membership) # calculate robustness
   result = {
     'method': method_name.split("_")[1],
     'number_of_communities': number_of_communities,
@@ -43,105 +43,83 @@ def get_method_result(
     'resolution': method_params['resolution'] if 'resolution' in method_params else None,
     'duration': stopwatch.duration,
     'accuracy': accuracy,
-    # 'accuracy_edges': accuracy_edges,
     'robustness': robustness,
-    'partition': partition.membership,}
+    'partition': partition.membership}
   return result
 
-def run_experiment(
-    folder_name,
-    number_of_communities,
-    community_size,
-    p_in,
-    difficulty,
-    methods,
-    noises=[0],
-    partition_seeds=[0],
-    seed=42,
-  ):
-  # for p_in in tqdm(probabilities, desc='p_in', leave=False):
-  #   for multiplier in tqdm(difficulties, desc='multiplier', leave=False):
-  g = generate_graph(number_of_communities, community_size, p_in, difficulty, seed)
-  gt = get_ground_truth(number_of_communities, community_size, g) # get ground truth
+def run_experiment(network_path: str, methods: dict) -> bool:
+  g = read_pickle(network_path)
   edge_density = g.density()
+  number_of_communities, total_nodes = re.findall(r'(\d+)C_(\d+)N', network_path)[0]
+  number_of_communities = int(number_of_communities)
+  community_size = int(int(total_nodes)/number_of_communities)
+  gt = get_ground_truth(number_of_communities, community_size, g) # get ground truth
+  partitions_path = get_all_subpaths(network_path_to_memberships_path(network_path))
   for method_name, method_info in tqdm(methods.items(), desc='method', leave=False, total=len(methods)):
     result = None
+    runs = 1
     method_call_name = method_info['method_call_name']
     parameters = method_info['parameters']
     params = {k: v for k, v in parameters.items()}
     if method_call_name == 'community_groundtruth':
       params['groundtruth'] = gt
+    if method_call_name == 'community_leading_eigenvector':
+      params['clusters'] = number_of_communities
     if method_call_name in {'community_leiden', 'community_hedonic'}:
       params['resolution'] = edge_density
-    for noise in tqdm(noises, desc='noise', leave=False, total=len(noises)):
-      initial_memberships = [get_initial_membership(gt, noise, partition_seed) for partition_seed in partition_seeds]
-      for partition_idx, initial_membership in enumerate(tqdm(initial_memberships, desc='partition_seed', leave=False)):
-        if 'initial_membership' in params:
-          params['initial_membership'] = initial_membership
-          result = None
-        if result is None:
+      runs = 10
+    for partition_path in tqdm(partitions_path, desc='partitions', leave=False, total=len(partitions_path)):
+      initial_membership = read_csv_partition(partition_path)
+      if 'initial_membership' in params:
+        params['initial_membership'] = initial_membership
+        result = None
+      if result is None:
+        saved_partitions = set()  # Set to keep track of saved partitions
+        result_count = 0
+        for _ in range(runs):
           result = get_method_result(
-            g,
-            method_call_name,
-            params,
-            p_in,
-            difficulty,
-            community_size,
-            number_of_communities,
-            gt)
-        result['method'] = method_name
-        result['noise'] = noise
-        result['network_seed'] = seed
-        result['partition_seed'] = partition_seeds[partition_idx]
-        output_results_path = f"~/Databases/hedonic/{folder_name}/{number_of_communities} Communities of {community_size} nodes/Noise = {noise:.2f}/P_in = {p_in:.2f}/Difficulty = {difficulty:.2f}/Network ({seed:03d})/Partition ({partition_seeds[partition_idx]:03d})"
-        file_path = os.path.join(
-          os.path.expanduser(output_results_path),
-          f'{method_name}.json')
-        os.makedirs(os.path.dirname(file_path), exist_ok=True)
-        with open(file_path, 'w') as file:
-          file.write(json.dumps(result))
+            g = g,
+            method_name = method_call_name,
+            method_params = params,
+            p_in = float(re.findall(r'P_in = (\d+\.\d+)/', network_path)[0]),
+            multiplier = float(re.findall(r'Difficulty = (\d+\.\d+)/', network_path)[0]),
+            community_size = community_size,
+            number_of_communities = number_of_communities,
+            ground_truth = gt)
+          if (part := tuple(result['partition'])) not in saved_partitions:  # Convert list to tuple for set membership
+            saved_partitions.add(part)  # Add as tuple to the set
+            result['method'] = method_name
+            result['noise'] = float(re.findall(r'Noise = (\d+\.\d+)/', partition_path)[0])
+            result['network_seed'] = int(re.findall(r'network_0*(\d+)\.pkl', network_path)[0])
+            result['partition_seed'] = int(re.findall(r'partition_0*(\d+)\.csv', partition_path)[0])
+            output_results_path = f"{'/'.join(partition_path.split('/')[:-1])}/P_in = {result['p_in']:.2f}/Difficulty = {result['multiplier']:.2f}/Network ({result['network_seed']:03d})/Partition ({result['partition_seed']:03d})".replace('/memberships/', '/results/')  
+            file_path = os.path.join(
+              os.path.expanduser(output_results_path),
+              f'{method_name}_{result_count:03d}.json'
+            )
+            os.makedirs(os.path.dirname(file_path), exist_ok=True)
+            with open(file_path, 'w') as file:
+              file.write(json.dumps(result))
+              # print(f'Wrote {file_path}')
+            result_count += 1
+          else:
+            # Skip saving as the partition already exists
+            pass  # Optionally, you can add a logging statement here to indicate skipping.
   return True
 
 #################################################
 
 def main():
-  # Parse command line arguments
-  # "python scripts/experiment.py --folder_name sample_exp --max_n_nodes 120 --n_communities $n_community --seed $seed --p_in $p_in --difficulty $difficulty"
+  # Parse command line arguments: python scripts/experiment.py DIR
   parser = argparse.ArgumentParser(description='Run hedonic game experiments.')
-  parser.add_argument('--folder_name', type=str, required=False, help='Name of the folder to store results', default='test')
-  parser.add_argument('--max_n_nodes', type=int, required=False, help='Maximum number of nodes', default=60)
-  parser.add_argument('--n_communities', type=int, nargs='+', required=False, help='Number of clusters', default=[2])
-  parser.add_argument('--seeds', type=int, nargs='+', required=False, help='Seeds', default=[42])
-  parser.add_argument('--p_in', type=float, nargs='+', required=False, help='Probability of edge within communities', default=[0.1])
-  parser.add_argument('--difficulty', type=float, nargs='+', required=False, help='Difficulty of the problem', default=[0.5])
-  parser.add_argument('--noises', type=float, nargs='+', required=False, help='Noise levels', default=[0.01, 0.25, 0.5, 0.6, 0.7, .75, 0.8, 0.85, 0.9, 0.95, 1.0, 1.1])
-  parser.add_argument('--partition_seeds', type=int, nargs='+', default=[0], help='Seeds for initial partition')
+  parser.add_argument('dir', type=str, help='Path of the directory containing the networks')
   args = parser.parse_args()
 
-  folder_name = args.folder_name # MainResultExperiment
-  max_n_nodes = args.max_n_nodes
-  n_communities = args.n_communities # [2, 3, 4, 5, 6]
-  seeds = args.seeds # [1, 2, 3, 4, 5]
-  probabilities = args.p_in # [.10, .09, .08, .07, .06, .05, .04, .03, .02, .01]
-  difficulties = args.difficulty # [.75, .7, .65, .6, .55, .5, .4, .3, .2, .1]
-  noises = args.noises # [0.01, 0.25, 0.5, 0.6, 0.7, .75, 0.8, 0.85, 0.9, 0.95, 1.0, 1.1]
-  partition_seeds = args.partition_seeds
-  for n_community in tqdm(n_communities, desc='n_community', leave=False):
-    community_size = int(max_n_nodes / n_community)
-    for p_in in tqdm(probabilities, desc='p_in', leave=False):
-      for difficulty in tqdm(difficulties, desc='difficulty', leave=False):
-        for seed in tqdm(seeds, desc='seed', leave=False):
-          run_experiment(
-            folder_name,
-            n_community,
-            community_size,
-            p_in,
-            difficulty,
-            config.methods,
-            noises,
-            partition_seeds,
-            seed)
-  print(f'Experiments completed successfully.')
+  if run_experiment(network_path=args.dir, methods=config.methods):
+    # Mark the experiment as completed
+    with open(args.dir.replace('.pkl', '.completed'), 'w') as file:
+      file.write('')
+  
   return True
 
 
