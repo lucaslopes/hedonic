@@ -75,6 +75,16 @@ def read_communities(file_path, mode='list_of_communities'):
         communities[community] = set({node})
   return communities
 
+def delete_non_format_files(path: str, format: str):
+  '''
+  Delete all files in the given path that do not have the given format.
+  Useful for cleaning up temporary files like the .completed files.
+  '''
+  for root, _, files in os.walk(path):
+    for file in files:
+      if not file.endswith(format):
+        os.remove(os.path.join(root, file))
+
 def probs_matrix(n_communities, p, q):
   probs = np.full((n_communities, n_communities), q) # fill with q
   np.fill_diagonal(probs, p) # fill diagonal with p
