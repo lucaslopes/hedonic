@@ -34,8 +34,7 @@ def generate_command(file, main_session, python_script, env_activation):
 
     command = (
         f"tmux new-window -t {main_session} -n {window_name} "
-        f"\"{env_activation} && "
-        f"exec python {python_script} \\\"{file}\\\"'\";\n"
+        f"\"bash -i -c '{env_activation} && exec python {python_script} \\\"{file}\\\"'\";\n"
     )
 
     return command
