@@ -5,7 +5,7 @@ from utils import get_all_subpaths
 # suffix = 0
 main_session = 'HedonicSession'  # f"Session_{suffix}"
 python_script = "scripts/exp.py"
-networks_dir = "/Users/lucas/Databases/Hedonic/PHYSA/Synthetic_Networks/V2040/networks"
+networks_dir = "/Users/lucas/Databases/Hedonic/PHYSA/Synthetic_Networks/V1020/networks"
 env_activation = "source $(conda info --base)/etc/profile.d/conda.sh && conda activate hedonic"
 
 # Find all .pkl files

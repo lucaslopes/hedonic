@@ -50,9 +50,9 @@ def get_method_result(
 def run_experiment(network_path: str, methods: dict) -> bool:
   g = read_pickle(network_path)
   edge_density = g.density()
-  number_of_communities, total_nodes = re.findall(r'(\d+)C_(\d+)N', network_path)[0]
+  number_of_communities, community_size = re.findall(r'(\d+)C_(\d+)N', network_path)[0]
   number_of_communities = int(number_of_communities)
-  community_size = int(int(total_nodes)/number_of_communities)
+  community_size = int(community_size)  # int(int(total_nodes)/number_of_communities)
   gt = get_ground_truth(number_of_communities, community_size, g) # get ground truth
   partitions_path = get_all_subpaths(network_path_to_memberships_path(network_path))
   for method_name, method_info in tqdm(methods.items(), desc='method', leave=False, total=len(methods)):

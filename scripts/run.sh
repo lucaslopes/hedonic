@@ -2,8 +2,8 @@
 
 # suffix=0
 main_session="HedonicSession"  # "Session_$suffix"
-commands_file="/Users/lucas/Databases/Hedonic/PHYSA/Synthetic_Networks/V2040/commands.txt"
-max_concurrent_windows=4
+commands_file="/Users/lucas/Databases/Hedonic/PHYSA/Synthetic_Networks/V1020/commands.txt"
+max_concurrent_windows=5
 
 # Ensure conda is available
 source $(conda info --base)/etc/profile.d/conda.sh
