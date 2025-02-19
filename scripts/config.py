@@ -39,19 +39,20 @@ methods = {
       'arpack_options': None,
     },
   },
-  # 'Leiden': {
-  #   'method_call_name': 'community_leiden',
-  #   'parameters': {
-  #     'objective_function': "CPM",
-  #     'weights': None,
-  #     'node_weights': None,
-  #     'resolution': 1,
-  #     'beta': 0.01,
-  #     'initial_membership': None,
-  #     'n_iterations': -1,
-  #     'can_create_new_clusters': False,
-  #   },
-  # },
+  'Leiden': {
+    'method_call_name': 'community_leiden',
+    'parameters': {
+      'objective_function': "CPM",
+      'weights': None,
+      'node_weights': None,
+      'resolution': 1,
+      'beta': 0.01,
+      'initial_membership': None,
+      'n_iterations': -1,
+      'only_first_phase': False,
+      'can_create_new_clusters': False,
+    },
+  },
   'Hedonic': {
     'method_call_name': 'community_leiden',
     'parameters': {
