@@ -34,19 +34,25 @@ def read_csv_partition(partition_path: str) -> list[int]:
     return [int(x) for x in f.read().strip().split(',')]
 
 def load_json_files(file_paths, ignore_partition_key=True):
-    """
-    Reads all JSON files from a list of file paths and returns a combined list of result dictionaries.
-    """
-    data = []
-    for fp in tqdm(file_paths, desc="Loading JSON files"):
-        with open(fp, 'r') as f:
-            # Each file is assumed to be a JSON list
-            file_data = json.load(f)
-            for d in file_data:
-                if ignore_partition_key and 'partition' in d:
-                    del d['partition']
-                data.append(d)
-    return pd.DataFrame(data)
+  """
+  Reads all JSON files from a list of file paths and returns a combined list of result dictionaries.
+  """
+  # Load JSON data
+  json_files = []
+  for root, dirs, files in os.walk(file_paths):
+    for file in files:
+      if file.endswith(".json"):
+        json_files.append(os.path.join(root, file))
+  data = []
+  for fp in tqdm(json_files, desc="Loading JSON files"):
+    with open(fp, 'r') as f:
+      # Each file is assumed to be a JSON list
+      file_data = json.load(f)
+      for d in file_data:
+        if ignore_partition_key and 'partition' in d:
+          del d['partition']
+        data.append(d)
+  return pd.DataFrame(data)
 
 def read_pickle(graph_path: str, verbose: bool = False) -> Game:
   with open(graph_path, 'rb') as f:
