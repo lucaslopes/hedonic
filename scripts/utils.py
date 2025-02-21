@@ -44,22 +44,29 @@ def load_json_files(file_paths, ignore_partition_key=True, verbose=False):
     for file in files:
       if file.endswith(".json"):
         json_files.append(os.path.join(root, file))
-  json_files.sort()
+  json_files = sort_files(json_files)
+  with open('json_files.txt', 'w') as f:
+    for line in json_files:
+      f.write(line + '\n')
+  print(f"Saved list of JSON files to: `json_files.txt`")
   data = []
-  last_network = None
+  last_noise = None
   for fp in tqdm(json_files, desc="Loading JSON files"):
     network_seed = int(re.findall(r'Network \(0*(\d+)\)', fp)[0])
-    if last_network is None:
-      last_network = network_seed
-    if network_seed != last_network:
+    noise = float(re.findall(r'Noise = (\d+\.\d+)', fp)[0])
+    csv_path = fp.replace('/resultados/', '/csv_results/')
+    csv_path = csv_path.split('/')[:-1]
+    csv_path[-1] = f'network_{network_seed:03d}.csv.gzip'
+    csv_path = '/'.join(csv_path)
+    if os.path.exists(os.path.dirname(csv_path)):
+      continue
+    Path(os.path.dirname(csv_path)).mkdir(parents=True, exist_ok=True)
+    if last_noise is None:
+      last_noise = noise
+    if noise != last_noise:
+      last_noise = noise
       df = pd.DataFrame(data)
       data = []
-      last_network = network_seed
-      csv_path = fp.replace('/resultados/', '/csv_results/')
-      csv_path = csv_path.split('/')[:-1]
-      csv_path[-1] = f'network_{network_seed:03d}.csv.gzip'
-      csv_path = '/'.join(csv_path)
-      Path(os.path.dirname(csv_path)).mkdir(parents=True, exist_ok=True)
       if verbose:
         print(f"Saving dataframe to: `{csv_path}`")
       df.to_csv(csv_path, index=False, compression="gzip")
@@ -77,7 +84,6 @@ def read_pickle(graph_path: str, verbose: bool = False) -> Game:
       print(f"Loading graph from: `{graph_path}`")
     g = pickle.load(f)
   return g
-
 
 def read_txt_gz_to_igraph(file_path):
   edges = []
@@ -124,6 +130,34 @@ def delete_non_format_files(path: str, format: str):
     for file in files:
       if not file.endswith(format):
         os.remove(os.path.join(root, file))
+
+def extract_sorting_keys(filename):
+  """Extract sorting keys from the file name"""
+  match = re.search(r'network_(\d+)\.pkl', filename)
+  network_index = int(match.group(1)) if match else float('inf')
+  if network_index == float('inf'):
+    match = re.findall(r'Network \(0*(\d+)\)', filename)
+    network_index = int(match[0]) if match else float('inf')
+  if network_index == float('inf'):
+    raise ValueError(f"Could not find network index in filename: `{filename}`")
+
+  difficulty_match = re.search(r'Difficulty = (\d+\.\d+)', filename)
+  difficulty = float(difficulty_match.group(1)) if difficulty_match else float('inf')
+  
+  p_in_match = re.search(r'P_in = (\d+\.\d+)', filename)
+  p_in = float(p_in_match.group(1)) if p_in_match else float('inf')
+  
+  n_communities_match = re.search(r'(\d+)C_', filename)
+  n_communities = int(n_communities_match.group(1)) if n_communities_match else float('inf')
+
+  noise_match = re.search(r'Noise = (\d+\.\d+)', filename)
+  noise = float(noise_match.group(1)) if noise_match else float('inf')
+  
+  return (network_index, n_communities, p_in, difficulty, -noise)  
+
+def sort_files(file_list):
+  """Sort the list of files based on the extracted keys"""
+  return sorted(file_list, key=extract_sorting_keys)
 
 def probs_matrix(n_communities, p, q):
   probs = np.full((n_communities, n_communities), q) # fill with q

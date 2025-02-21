@@ -1,31 +1,7 @@
 import os
-import re
 import argparse
 from tqdm import tqdm
-from utils import get_all_subpaths
-
-
-def extract_sorting_keys(filename):
-    """Extract sorting keys from the file name"""
-    match = re.search(r'network_(\d+)\.pkl', filename)
-    network_index = int(match.group(1)) if match else float('inf')
-    
-    difficulty_match = re.search(r'Difficulty = (\d+\.\d+)', filename)
-    difficulty = float(difficulty_match.group(1)) if difficulty_match else float('inf')
-    
-    p_in_match = re.search(r'P_in = (\d+\.\d+)', filename)
-    p_in = float(p_in_match.group(1)) if p_in_match else float('inf')
-    
-    n_communities_match = re.search(r'(\d+)C_', filename)
-    n_communities = int(n_communities_match.group(1)) if n_communities_match else float('inf')
-    
-    return (network_index, n_communities, p_in, difficulty)
-
-
-def sort_files(file_list):
-    """Sort the list of files based on the extracted keys"""
-    return sorted(file_list, key=extract_sorting_keys)
-
+from utils import get_all_subpaths, sort_files
 
 def generate_command(file, main_session, python_script, env_activation):
     """Generate a valid window name (last 4 subdirectories) and create the correct command format"""
