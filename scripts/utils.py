@@ -1,4 +1,5 @@
 import os
+import re
 import gzip
 import json
 import pickle
@@ -33,26 +34,40 @@ def read_csv_partition(partition_path: str) -> list[int]:
   with open(partition_path, 'r') as f:
     return [int(x) for x in f.read().strip().split(',')]
 
-def load_json_files(file_paths, ignore_partition_key=True):
+def load_json_files(file_paths, ignore_partition_key=True, verbose=False):
   """
   Reads all JSON files from a list of file paths and returns a combined list of result dictionaries.
   """
   # Load JSON data
   json_files = []
-  for root, dirs, files in os.walk(file_paths):
+  for root, dirs, files in tqdm(os.walk(file_paths), desc="Walking directory tree"):
     for file in files:
       if file.endswith(".json"):
         json_files.append(os.path.join(root, file))
+  json_files.sort()
   data = []
+  last_multiplier = None
   for fp in tqdm(json_files, desc="Loading JSON files"):
+    multiplier = float(re.findall(r'Difficulty = (\d+\.\d+)/', fp)[0])
+    if last_multiplier is None:
+      last_multiplier = multiplier
+    if multiplier != last_multiplier:
+      df = pd.DataFrame(data)
+      data = []
+      last_multiplier = multiplier
+      csv_path = fp.replace('/resultados/', '/csv_results/')
+      csv_path = '/'.join(csv_path.split('/')[:-2]) + '/data.csv.gzip'
+      Path(os.path.dirname(csv_path)).mkdir(parents=True, exist_ok=True)
+      if verbose:
+        print(f"Saving dataframe to: `{csv_path}`")
+      df.to_csv(csv_path, index=False, compression="gzip")
     with open(fp, 'r') as f:
-      # Each file is assumed to be a JSON list
-      file_data = json.load(f)
+      file_data = json.load(f)  # Each file is assumed to be a JSON list
       for d in file_data:
         if ignore_partition_key and 'partition' in d:
           del d['partition']
         data.append(d)
-  return pd.DataFrame(data)
+  return True
 
 def read_pickle(graph_path: str, verbose: bool = False) -> Game:
   with open(graph_path, 'rb') as f:
