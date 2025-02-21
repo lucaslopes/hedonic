@@ -1,8 +1,11 @@
 import os
 import gzip
+import json
 import pickle
 import numpy as np
 import igraph as ig
+import pandas as pd
+from tqdm import tqdm
 from pathlib import Path
 from collections import defaultdict
 from networkx.generators.community import stochastic_block_model as SBM
@@ -30,6 +33,20 @@ def read_csv_partition(partition_path: str) -> list[int]:
   with open(partition_path, 'r') as f:
     return [int(x) for x in f.read().strip().split(',')]
 
+def load_json_files(file_paths, ignore_partition_key=True):
+    """
+    Reads all JSON files from a list of file paths and returns a combined list of result dictionaries.
+    """
+    data = []
+    for fp in tqdm(file_paths, desc="Loading JSON files"):
+        with open(fp, 'r') as f:
+            # Each file is assumed to be a JSON list
+            file_data = json.load(f)
+            for d in file_data:
+                if ignore_partition_key and 'partition' in d:
+                    del d['partition']
+                data.append(d)
+    return pd.DataFrame(data)
 
 def read_pickle(graph_path: str, verbose: bool = False) -> Game:
   with open(graph_path, 'rb') as f:
