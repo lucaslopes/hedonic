@@ -46,17 +46,19 @@ def load_json_files(file_paths, ignore_partition_key=True, verbose=False):
         json_files.append(os.path.join(root, file))
   json_files.sort()
   data = []
-  last_multiplier = None
+  last_network = None
   for fp in tqdm(json_files, desc="Loading JSON files"):
-    multiplier = float(re.findall(r'Difficulty = (\d+\.\d+)/', fp)[0])
-    if last_multiplier is None:
-      last_multiplier = multiplier
-    if multiplier != last_multiplier:
+    network_seed = int(re.findall(r'Network \(0*(\d+)\)', fp)[0])
+    if last_network is None:
+      last_network = network_seed
+    if network_seed != last_network:
       df = pd.DataFrame(data)
       data = []
-      last_multiplier = multiplier
+      last_network = network_seed
       csv_path = fp.replace('/resultados/', '/csv_results/')
-      csv_path = '/'.join(csv_path.split('/')[:-2]) + '/data.csv.gzip'
+      csv_path = csv_path.split('/')[:-1]
+      csv_path[-1] = f'network_{network_seed:03d}.csv.gzip'
+      csv_path = '/'.join(csv_path)
       Path(os.path.dirname(csv_path)).mkdir(parents=True, exist_ok=True)
       if verbose:
         print(f"Saving dataframe to: `{csv_path}`")
