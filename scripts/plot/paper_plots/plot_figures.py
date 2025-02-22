@@ -6,6 +6,7 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from tqdm import tqdm
+from stopwatch import Stopwatch
 from scipy.stats import gaussian_kde
 from scipy.interpolate import griddata
 
@@ -385,17 +386,35 @@ def plot_figure4(df):
 # =============================================================================
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Generate figures from JSON files.')
-    parser.add_argument('path', type=str, help='Path to the directory containing the JSON files.', nargs='?', default='/Users/lucas/Databases/Hedonic/PHYSA/Synthetic_Networks/V1020/resultados.csv.gzip')
+    parser.add_argument('path', type=str, help='Path to the directory containing the JSON files.', nargs='?', default='/Users/lucas/Databases/Hedonic/PHYSA/Synthetic_Networks/V1020/resultados.parquet')
     args = parser.parse_args()
     dir_path = args.path
-    
-    df = pd.read_csv(dir_path, compression="gzip")
-    
+    sw = Stopwatch()
+    sw.start()
+    df = pd.read_parquet(dir_path)
+    sw.stop()
+    print(f"Loaded {dir_path} in {sw.duration}s")
     # Create the three figures
-    # plot_figure1(df)
+    sw.reset()
+    sw.start()
+    plot_figure1(df)
+    sw.stop()
+    print(f"Generated figure1.png in {sw.duration}s")
+    sw.reset()
+    sw.start()
     # plot_figure2(df)
-    plot_figure3(df)
-    plot_figure4(df)
+    sw.stop()
+    print(f"Generated figure2.png in {sw.duration}s")
+    sw.reset()
+    sw.start()
+    # plot_figure3(df)
+    sw.stop()
+    print(f"Generated figure3.png in {sw.duration}s")
+    sw.reset()
+    sw.start()
+    # plot_figure4(df)
+    sw.stop()
+    print(f"Generated figure4.png in {sw.duration}s")
     
     print("Figures generated and saved as figure1.png, figure2.png, and figure3.png")
 
