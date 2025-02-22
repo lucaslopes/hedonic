@@ -28,18 +28,51 @@ def collect_paths(leaf_folder: str, extension: str = ".json") -> list[str]:
     return file_paths
 
 
-def get_leaf_subdirs(root: str) -> list[str]:
+def get_leaf_subdirs_from_subroot(subroot: str) -> list[str]:
     """
-    Returns a list of all leaf directories (those with no subdirectories) within the root.
+    Walks a subtree starting at subroot and returns all leaf directories.
     """
     leaf_dirs = []
-    for dirpath, dirs, _ in tqdm(os.walk(root), desc="Walking directory tree"):
-        if not dirs:  # This directory has no subdirectories, so it's a leaf.
+    for dirpath, dirs, _ in os.walk(subroot):
+        if not dirs:  # This is a leaf directory.
             leaf_dirs.append(dirpath)
     return leaf_dirs
 
 
-# Helper function for parallel collection of paths.
+def get_subroots(root: str, max_depth: int = 1) -> list[str]:
+    """
+    Returns a list of subdirectories from the root at a given depth.
+    If max_depth is 1, you get the immediate child directories.
+    Setting max_depth higher will go further down.
+    """
+    subroots = []
+    # Walk the tree and measure depth relative to root.
+    for dirpath, dirs, _ in os.walk(root):
+        # Calculate relative depth (number of separators after the root)
+        rel_depth = dirpath[len(root):].count(os.sep)
+        if rel_depth == max_depth:
+            subroots.append(dirpath)
+            # Prevent descending further from this subroot.
+            dirs[:] = []
+    return subroots
+
+
+def get_leaf_subdirs_parallel(root: str, subroot_depth: int = 1) -> list[str]:
+    """
+    Uses parallel processing to collect all leaf directories.
+    First, it gathers subroots at the specified depth, then processes each
+    subtree in parallel, ensuring that the returned paths are complete.
+    """
+    # Get subroots at the chosen depth. If none found, fall back to using the root.
+    subroots = get_subroots(root, max_depth=subroot_depth)
+    if not subroots:
+        subroots = [root]
+    with ProcessPoolExecutor() as executor:  # Process each subroot concurrently.
+        results = list(executor.map(get_leaf_subdirs_from_subroot, subroots))
+    leaf_dirs = [leaf for sublist in results for leaf in sublist]  # Flatten the list of lists.
+    return leaf_dirs
+
+
 def collect_paths_helper(args: tuple[str, str]) -> list[str]:
     """
     Helper function for parallel collection of paths.
@@ -53,8 +86,7 @@ def get_paths_sorted(folder_path: str, extension: str = ".json") -> list[str]:
     Gets a list of files with the given extension sorted by network seed and experiment settings,
     processing only leaf directories in parallel.
     """
-    leaf_dirs = get_leaf_subdirs(folder_path)
-    # Prepare arguments for each task.
+    leaf_dirs = get_leaf_subdirs_parallel(folder_path, subroot_depth=2)
     args_list = [(lf, extension) for lf in leaf_dirs]
     with ProcessPoolExecutor() as executor:
         results = list(tqdm(
@@ -62,10 +94,10 @@ def get_paths_sorted(folder_path: str, extension: str = ".json") -> list[str]:
             total=len(leaf_dirs),
             desc=f"Collecting {extension} paths"
         ))
-    # Flatten the list of lists and sort the file paths.
     file_paths = [file for sublist in results for file in sublist]
     file_paths = sort_files(file_paths)
     return file_paths
+
 
 
 def split_json_paths(json_paths: list[str]) -> list[list[str]]:
@@ -212,20 +244,14 @@ def load_experiment_data(results_folder: str):
     """
     Loads the experiment data from a given folder.
     """
-    print('Collecting JSON paths...')
     sorted_json_paths = get_paths_sorted(results_folder)
-    print("Found", len(sorted_json_paths), "JSON files")
-    print('Splitting JSON files...')
     split_paths = split_json_paths(sorted_json_paths)
-    print("Dumping JSON files...")
     dump_all_json_paths(split_paths)
     time.sleep(2)
     json_path = results_folder.replace('/resultados/', '/json_paths/')
-    print('Dumping CSV files...')
     dump_all_csv(json_path)
     time.sleep(2)
     csv_path = results_folder.replace('/resultados/', '/csv_results/')
-    print('Combining CSV files...')
     df = get_combined_dataframe(csv_path)
     return df
 
