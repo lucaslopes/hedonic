@@ -8,6 +8,7 @@ from concurrent.futures import ProcessPoolExecutor
 import pandas as pd
 from tqdm import tqdm
 from utils import sort_files
+WORKERS = 4
 
 
 def collect_paths(leaf_folder: str, extension: str = ".json") -> list[str]:
@@ -47,17 +48,16 @@ def get_subroots(root: str, max_depth: int = 1) -> list[str]:
     """
     subroots = []
     # Walk the tree and measure depth relative to root.
-    for dirpath, dirs, _ in os.walk(root):
+    for dirpath, dirs, _ in tqdm(os.walk(root), desc="Walking directory tree for subroots"):
         # Calculate relative depth (number of separators after the root)
         rel_depth = dirpath[len(root):].count(os.sep)
         if rel_depth == max_depth:
             subroots.append(dirpath)
-            # Prevent descending further from this subroot.
-            dirs[:] = []
+            dirs[:] = []  # Prevent descending further from this subroot.
     return subroots
 
 
-def get_leaf_subdirs_parallel(root: str, subroot_depth: int = 1) -> list[str]:
+def get_leaf_subdirs_parallel(root: str, subroot_depth: int = 4) -> list[str]:
     """
     Uses parallel processing to collect all leaf directories.
     First, it gathers subroots at the specified depth, then processes each
@@ -67,8 +67,12 @@ def get_leaf_subdirs_parallel(root: str, subroot_depth: int = 1) -> list[str]:
     subroots = get_subroots(root, max_depth=subroot_depth)
     if not subroots:
         subroots = [root]
-    with ProcessPoolExecutor() as executor:  # Process each subroot concurrently.
-        results = list(executor.map(get_leaf_subdirs_from_subroot, subroots))
+    with ProcessPoolExecutor(max_workers=WORKERS) as executor:  # Process each subroot concurrently.
+        results = list(tqdm(
+            executor.map(get_leaf_subdirs_from_subroot, subroots),
+            total=len(subroots),
+            desc="Get leaf subdirs from subroot paths"
+        ))
     leaf_dirs = [leaf for sublist in results for leaf in sublist]  # Flatten the list of lists.
     return leaf_dirs
 
@@ -86,9 +90,9 @@ def get_paths_sorted(folder_path: str, extension: str = ".json") -> list[str]:
     Gets a list of files with the given extension sorted by network seed and experiment settings,
     processing only leaf directories in parallel.
     """
-    leaf_dirs = get_leaf_subdirs_parallel(folder_path, subroot_depth=2)
+    leaf_dirs = get_leaf_subdirs_parallel(folder_path)
     args_list = [(lf, extension) for lf in leaf_dirs]
-    with ProcessPoolExecutor() as executor:
+    with ProcessPoolExecutor(max_workers=WORKERS) as executor:
         results = list(tqdm(
             executor.map(collect_paths_helper, args_list),
             total=len(leaf_dirs),
@@ -165,7 +169,7 @@ def dump_all_json_paths(
         output_file_parts[-1] = f'network_{network_seed:03d}.txt'
         output_file = '/'.join(output_file_parts)
         tasks.append((json_list, output_file, verbose))
-    with ProcessPoolExecutor() as executor:
+    with ProcessPoolExecutor(max_workers=WORKERS) as executor:
         list(tqdm(
             executor.map(dump_json_paths_wrapper, tasks),
             total=len(tasks),
@@ -209,7 +213,7 @@ def dump_all_csv(json_path: str, output_folder: str = "csv_results") -> bool:
     """
     sorted_txt_paths = get_paths_sorted(json_path, extension=".txt")
     args_list = [(fp, output_folder) for fp in sorted_txt_paths]
-    with ProcessPoolExecutor() as executor:
+    with ProcessPoolExecutor(max_workers=WORKERS) as executor:
         list(tqdm(
             executor.map(dump_csv_helper, args_list),
             total=len(sorted_txt_paths),
@@ -230,7 +234,7 @@ def get_combined_dataframe(csv_path: str) -> pd.DataFrame:
     Gets a combined DataFrame from a list of CSV files.
     """
     sorted_csv_paths = get_paths_sorted(csv_path, extension=".csv.gzip")
-    with ProcessPoolExecutor() as executor:
+    with ProcessPoolExecutor(max_workers=WORKERS) as executor:
         df_list = list(tqdm(
             executor.map(read_csv_helper, sorted_csv_paths),
             total=len(sorted_csv_paths),
