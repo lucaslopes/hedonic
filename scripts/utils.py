@@ -133,7 +133,7 @@ def delete_non_format_files(path: str, format: str):
 
 def extract_sorting_keys(filename):
   """Extract sorting keys from the file name"""
-  match = re.search(r'network_(\d+)\.pkl', filename)
+  match = re.search(r'network_(\d+)\.', filename)
   network_index = int(match.group(1)) if match else float('inf')
   if network_index == float('inf'):
     match = re.findall(r'Network \(0*(\d+)\)', filename)
