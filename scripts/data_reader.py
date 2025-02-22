@@ -33,7 +33,7 @@ def get_leaf_subdirs(root: str) -> list[str]:
     Returns a list of all leaf directories (those with no subdirectories) within the root.
     """
     leaf_dirs = []
-    for dirpath, dirs, _ in os.walk(root):
+    for dirpath, dirs, _ in tqdm(os.walk(root), desc="Walking directory tree"):
         if not dirs:  # This directory has no subdirectories, so it's a leaf.
             leaf_dirs.append(dirpath)
     return leaf_dirs
@@ -212,14 +212,20 @@ def load_experiment_data(results_folder: str):
     """
     Loads the experiment data from a given folder.
     """
+    print('Collecting JSON paths...')
     sorted_json_paths = get_paths_sorted(results_folder)
+    print("Found", len(sorted_json_paths), "JSON files")
+    print('Splitting JSON files...')
     split_paths = split_json_paths(sorted_json_paths)
+    print("Dumping JSON files...")
     dump_all_json_paths(split_paths)
     time.sleep(2)
     json_path = results_folder.replace('/resultados/', '/json_paths/')
+    print('Dumping CSV files...')
     dump_all_csv(json_path)
     time.sleep(2)
     csv_path = results_folder.replace('/resultados/', '/csv_results/')
+    print('Combining CSV files...')
     df = get_combined_dataframe(csv_path)
     return df
 
@@ -229,9 +235,12 @@ def main():
     Main function to load the experiment data and save it to a CSV file.
     """
     results_folder = "/Users/lucas/Databases/Hedonic/PHYSA/Synthetic_Networks/V1020/resultados/"
+    print("Loading experiment data from", results_folder)
     df = load_experiment_data(results_folder)
     output_path = results_folder[:-1] + '.csv.gzip'
+    print('Saving data to', output_path)
     df.to_csv(output_path, index=False, compression="gzip")
+    print("Done.")
     return True
 
 
