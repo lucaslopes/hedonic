@@ -4,7 +4,7 @@ Optimized & Refactored Plotting Script with Persistent Data
 
 This script computes plot-ready data once, saves it as pickle files, and reuses it
 on subsequent runs. It also leverages parallel processing for expensive KDE calculations
-and removes redundant computations (e.g. for the noisy subsets in Figure 2).
+and removes redundant computations (e.g. for the noisy subsets in Figure 4).
 
 Usage:
   python persist_plots_refactored.py [PATH_TO_DATA]
@@ -384,13 +384,13 @@ def compute_figure4b_efficiency_data(df: pd.DataFrame):
 
 def plot_figure4(fig4_data: dict, xlabel: str):
     """
-    General plotting routine for Figure 2.
+    General plotting routine for Figure 4.
     The upper row plots KDE for all data (clean) and the bottom row for the noisy subset.
     'xlabel' should be "Robustness" or "Efficiency" accordingly.
     """
-    X = fig2_data["X"]
-    Y = fig2_data["Y"]
-    kde_results = fig2_data["kde_results"]
+    X = fig4_data["X"]
+    Y = fig4_data["Y"]
+    kde_results = fig4_data["kde_results"]
     n_methods = len(METHODS_MAPPING)
     
     fig, axs = plt.subplots(2, n_methods, figsize=(15, 6))
@@ -440,27 +440,27 @@ def main():
     print("Done: figure1.pdf")
     
     # Figure 2
-    fig3_file = os.path.join(PERSIST_DIR, "fig3_data.pkl")
-    fig3_data = load_or_compute(fig3_file, compute_figure3_data, df)
-    plot_figure3(fig3_data)
+    fig2_file = os.path.join(PERSIST_DIR, "fig2_data.pkl")
+    fig2_data = load_or_compute(fig2_file, compute_figure2_data, df)
+    plot_figure2(fig2_data)
     print("Done: figure2.pdf")
     
     # Figure 3
-    fig4_file = os.path.join(PERSIST_DIR, "fig4_data.pkl")
-    fig4_data = load_or_compute(fig4_file, compute_figure4_data, df)
-    plot_figure4(fig4_data)
-    print("Done: figure2.pdf")
+    fig3_file = os.path.join(PERSIST_DIR, "fig3_data.pkl")
+    fig3_data = load_or_compute(fig3_file, compute_figure3_data, df)
+    plot_figure3(fig3_data)
+    print("Done: figure3.pdf")
     
     # Figure 4a (Robustness)
-    fig2_rob_file = os.path.join(PERSIST_DIR, "fig2_robustness_data.pkl")
-    fig2_rob_data = load_or_compute(fig2_rob_file, compute_figure2_robustness_data, df)
-    plot_figure2(fig2_rob_data, xlabel="Robustness")
+    fig4a_rob_file = os.path.join(PERSIST_DIR, "fig4a_robustness_data.pkl")
+    fig4a_rob_data = load_or_compute(fig4a_rob_file, compute_figure4a_robustness_data, df)
+    plot_figure4(fig4a_rob_data, xlabel="Robustness")
     print("Done: figure4a_robustness.pdf")
     
     # Figure 4b (Efficiency)
-    fig2_eff_file = os.path.join(PERSIST_DIR, "fig2_efficiency_data.pkl")
-    fig2_eff_data = load_or_compute(fig2_eff_file, compute_figure2_efficiency_data, df)
-    plot_figure2(fig2_eff_data, xlabel="Efficiency")
+    fig4b_eff_file = os.path.join(PERSIST_DIR, "fig4b_efficiency_data.pkl")
+    fig4b_eff_data = load_or_compute(fig4b_eff_file, compute_figure4b_efficiency_data, df)
+    plot_figure4(fig4b_eff_data, xlabel="Efficiency")
     print("Done: figure4b_efficiency.pdf")
     
     print("All figures generated successfully.")
