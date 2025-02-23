@@ -59,9 +59,7 @@ BAR_COLOR_DICT = {
 }
 
 # Persistence directory
-PERSIST_DIR = "./persist"
-if not os.path.exists(PERSIST_DIR):
-    os.makedirs(PERSIST_DIR)
+PERSIST_DIR = None
 
 # =============================================================================
 # Utility Functions
@@ -139,7 +137,7 @@ def compute_figure1_data(df: pd.DataFrame, cmap: str = "BuPu"):
         "cmap": cmap
     }
 
-def plot_figure1(data: dict, filename: str = "figure1"):
+def plot_figure1(data: dict, filename: str = "figure1", fig_dir: str = None):
     """
     Plot histograms (upper row) and heatmaps (bottom row) for ground truth.
     """
@@ -147,11 +145,11 @@ def plot_figure1(data: dict, filename: str = "figure1"):
     global_max = data["global_max"]
     hist_data = data["hist_data"]
     heatmaps = data["heatmaps"]
-    cmap = "viridis_r"  # Alternatively, use data["cmap"]
+    cmap = "BuPu"  # Alternatively, use data["cmap"]
 
     fig, axs = plt.subplots(2, len(communities), figsize=(15, 6))
     
-    hist_color = plt.get_cmap(cmap)(0.99)
+    hist_color = plt.get_cmap(cmap+'_r')(0)
     for i, (nc, subset, counts) in enumerate(hist_data):
         ax = axs[0, i]
         ax.hist(subset, bins=100, range=(0, 1), color=hist_color)
@@ -174,7 +172,7 @@ def plot_figure1(data: dict, filename: str = "figure1"):
     cbar_ax = fig.add_axes([0.92, 0.15, 0.02, 0.7])
     fig.colorbar(im, cax=cbar_ax, label="Robustness")
     fig.subplots_adjust(right=0.9, hspace=0.3, wspace=0.3)
-    fig.savefig(f"{filename}.pdf", dpi=300)
+    fig.savefig(os.path.join(fig_dir, f"{filename}.pdf"), dpi=300)
     plt.close(fig)
 
 # =============================================================================
@@ -212,7 +210,7 @@ def compute_figure2_data(df: pd.DataFrame):
         "results": results
     }
 
-def plot_figure2(fig2_data: dict, filename: str = "figure2"):
+def plot_figure2(fig2_data: dict, filename: str = "figure2", fig_dir: str = None):
     """
     Plot bar charts (one subplot per metric) with means and confidence intervals.
     """
@@ -248,7 +246,7 @@ def plot_figure2(fig2_data: dict, filename: str = "figure2"):
     
     fig.legend(handles, labels, loc='upper center', ncol=len(methods), bbox_to_anchor=(0.5, -0.1))
     fig.subplots_adjust(bottom=0.1)
-    fig.savefig(f"{filename}.pdf", dpi=300, bbox_inches='tight')
+    fig.savefig(os.path.join(fig_dir, f"{filename}.pdf"), dpi=300, bbox_inches='tight')
     plt.close(fig)
 
 # =============================================================================
@@ -294,7 +292,7 @@ def compute_figure3_data(df: pd.DataFrame, precomputed_all=None, precomputed_noi
         "results": results
     }
 
-def plot_figure3(fig3_data: dict, filename: str = "figure3"):
+def plot_figure3(fig3_data: dict, filename: str = "figure3", fig_dir: str = None):
     """
     Plot bar charts for metrics split by communities for noise=0 (upper row) and noise=1 (lower row).
     """
@@ -333,7 +331,7 @@ def plot_figure3(fig3_data: dict, filename: str = "figure3"):
     
     fig.legend(handles, labels, loc='upper center', ncol=len(methods), bbox_to_anchor=(0.5, -0.1))
     fig.subplots_adjust(bottom=0)
-    fig.savefig(f"{filename}.pdf", dpi=300, bbox_inches='tight')
+    fig.savefig(os.path.join(fig_dir, f"{filename}.pdf"), dpi=300, bbox_inches='tight')
     plt.close(fig)
 
 
@@ -411,7 +409,7 @@ def compute_figure4b_efficiency_data(df: pd.DataFrame, precomputed_all, precompu
     )
     return {"X": X, "Y": Y, "kde_results": kde_results}
 
-def plot_figure4(fig4_data: dict, xlabel: str):
+def plot_figure4(fig4_data: dict, xlabel: str, fig_dir: str = None):
     """
     General plotting routine for Figure 4.
     The upper row plots KDE for all data (clean) and the bottom row for the noisy subset.
@@ -442,7 +440,7 @@ def plot_figure4(fig4_data: dict, xlabel: str):
     
     fig.tight_layout()
     fname = "acc_robustness.pdf" if xlabel == "Robustness" else "acc_efficiency.pdf"
-    fig.savefig(fname, dpi=300)
+    fig.savefig(os.path.join(fig_dir, fname), dpi=300)
     plt.close(fig)
 
 # =============================================================================
@@ -456,6 +454,11 @@ def main():
                         help='Path to the parquet or CSV.GZ dataset.')
     args = parser.parse_args()
     data_path = args.path
+    fig_dir = os.path.join(os.path.dirname(data_path), 'figures')
+    os.makedirs(fig_dir, exist_ok=True)
+
+    PERSIST_DIR = os.path.join(os.path.dirname(data_path), 'persist')
+    os.makedirs(PERSIST_DIR, exist_ok=True)
     
     print(f"Loading data from {data_path} ...")
     df = load_data(data_path)
@@ -467,7 +470,7 @@ def main():
     print("Plotting figure 1...")
     fig1_file = os.path.join(PERSIST_DIR, "fig1_data.pkl")
     fig1_data = load_or_compute(fig1_file, compute_figure1_data, df)
-    plot_figure1(fig1_data, "gt_robustness")
+    plot_figure1(fig1_data, "gt_robustness", fig_dir)
     del fig1_data
     gc.collect()
     print("Done: figure1.pdf")
@@ -476,7 +479,7 @@ def main():
     print("Plotting figure 2...")
     fig2_file = os.path.join(PERSIST_DIR, "fig2_data.pkl")
     fig2_data = load_or_compute(fig2_file, compute_figure2_data, df)
-    plot_figure2(fig2_data, "noise")
+    plot_figure2(fig2_data, "noise", fig_dir)
     del fig2_data
     gc.collect()
     print("Done: figure2.pdf")
@@ -485,7 +488,7 @@ def main():
     print("Plotting figure 3...")
     fig3_file = os.path.join(PERSIST_DIR, "fig3_data.pkl")
     fig3_data = load_or_compute(fig3_file, compute_figure3_data, df, precomputed_all=df_methods_all, precomputed_noisy=df_methods_noisy)
-    plot_figure3(fig3_data, "n_communities")
+    plot_figure3(fig3_data, "n_communities", fig_dir)
     del fig3_data
     gc.collect()
     print("Done: figure3.pdf")
@@ -497,7 +500,7 @@ def main():
         fig4a_rob_file, compute_figure4a_robustness_data, 
         df, precomputed_all=df_methods_all, precomputed_noisy=df_methods_noisy
     )
-    plot_figure4(fig4a_rob_data, xlabel="Robustness")
+    plot_figure4(fig4a_rob_data, xlabel="Robustness", fig_dir=fig_dir)
     del fig4a_rob_data
     gc.collect()
     print("Done: figure4a_robustness.pdf")
@@ -509,7 +512,7 @@ def main():
         fig4b_eff_file, compute_figure4b_efficiency_data, 
         df, precomputed_all=df_methods_all, precomputed_noisy=df_methods_noisy
     )
-    plot_figure4(fig4b_eff_data, xlabel="Efficiency")
+    plot_figure4(fig4b_eff_data, xlabel="Efficiency", fig_dir=fig_dir)
     del fig4b_eff_data
     gc.collect()
     print("Done: figure4b_efficiency.pdf")
