@@ -11,8 +11,6 @@ Usage:
 
 Requirements:
   - numpy, pandas, matplotlib, seaborn, scipy, joblib, tqdm, pickle
-
-Author: Marxist AGI (rewritten for efficiency, modularity & clarity)
 """
 
 import os
@@ -179,97 +177,10 @@ def plot_figure1(data: dict):
     plt.close(fig)
 
 # =============================================================================
-# Common KDE Computation for Figure 2
+# Figure 2: Bar Plots with Means & Confidence Intervals
 # =============================================================================
 
-def compute_kde2d_generic(xvals, yvals, X, Y):
-    """Compute 2D KDE for given x and y values over grid (X, Y)."""
-    if len(xvals) < 2:
-        return np.zeros_like(X)
-    kde = gaussian_kde(np.vstack([xvals, yvals]))
-    coords = np.vstack([X.ravel(), Y.ravel()])
-    return kde(coords).reshape(X.shape)
-
-def compute_kde_for_method(m_key, df_all, df_noisy, x_col, y_col, X, Y):
-    """
-    Compute KDEs for a given method using both the full dataset and the precomputed noisy subset.
-    """
-    sub_all = df_all[df_all['method'] == m_key]
-    sub_noisy = df_noisy[df_noisy['method'] == m_key]
-    Z_clean = compute_kde2d_generic(sub_all[x_col].values, sub_all[y_col].values, X, Y)
-    Z_noisy = compute_kde2d_generic(sub_noisy[x_col].values, sub_noisy[y_col].values, X, Y)
-    return m_key, Z_clean, Z_noisy
-
-def compute_figure2_data_common(df: pd.DataFrame, x_col: str, y_col: str, x_range: tuple, y_range: tuple, grid_size: int = 200):
-    """
-    Common function for computing KDE results for Figure 2.
-    Precomputes 'all' and 'noisy' subsets once, then computes KDEs for each method.
-    """
-    df_methods_all = df[df['method'].isin(METHODS_MAPPING.keys())]
-    df_methods_noisy = df_methods_all[df_methods_all['noise'] == 1]
-    xgrid = np.linspace(x_range[0], x_range[1], grid_size)
-    ygrid = np.linspace(y_range[0], y_range[1], grid_size)
-    X, Y = np.meshgrid(xgrid, ygrid)
-
-    results = Parallel(n_jobs=-1)(
-        delayed(compute_kde_for_method)(m_key, df_methods_all, df_methods_noisy, x_col, y_col, X, Y)
-        for m_key in METHODS_MAPPING
-    )
-    kde_results = {m_key: {"clean": Z_clean, "noisy": Z_noisy}
-                   for m_key, Z_clean, Z_noisy in results}
-    return X, Y, kde_results
-
-def compute_figure2_robustness_data(df: pd.DataFrame):
-    """Wrapper for computing Figure 2 (Robustness): x-axis is 'robustness'."""
-    X, Y, kde_results = compute_figure2_data_common(df, x_col='robustness', y_col='accuracy', x_range=(0,1), y_range=(0,1))
-    return {"X": X, "Y": Y, "kde_results": kde_results}
-
-def compute_figure2_efficiency_data(df: pd.DataFrame):
-    """Wrapper for computing Figure 2 (Efficiency): x-axis is 'duration'."""
-    df_methods_all = df[df['method'].isin(METHODS_MAPPING.keys())]
-    max_dur = df_methods_all['duration'].max() if not df_methods_all.empty else 1.0
-    X, Y, kde_results = compute_figure2_data_common(df, x_col='duration', y_col='accuracy', x_range=(0, max_dur), y_range=(0,1))
-    return {"X": X, "Y": Y, "kde_results": kde_results}
-
-def plot_figure2(fig2_data: dict, xlabel: str):
-    """
-    General plotting routine for Figure 2.
-    The upper row plots KDE for all data (clean) and the bottom row for the noisy subset.
-    'xlabel' should be "Robustness" or "Efficiency" accordingly.
-    """
-    X = fig2_data["X"]
-    Y = fig2_data["Y"]
-    kde_results = fig2_data["kde_results"]
-    n_methods = len(METHODS_MAPPING)
-    
-    fig, axs = plt.subplots(2, n_methods, figsize=(15, 6))
-    for j, (m_key, m_label) in enumerate(METHODS_MAPPING.items()):
-        # Upper row: all data (clean)
-        ax = axs[0, j]
-        Z = kde_results[m_key]["clean"]
-        if Z is not None and np.any(Z):
-            ax.contourf(X, Y, Z, levels=14, cmap=COLORMAP_DICT[m_key])
-        ax.set_title(m_label)
-        ax.set_xlabel(xlabel)
-        ax.set_ylabel("Accuracy" if j == 0 else "")
-        # Bottom row: noisy subset
-        ax2 = axs[1, j]
-        Z = kde_results[m_key]["noisy"]
-        if Z is not None and np.any(Z):
-            ax2.contourf(X, Y, Z, levels=14, cmap=COLORMAP_DICT[m_key])
-        ax2.set_xlabel(xlabel)
-        ax2.set_ylabel("Accuracy" if j == 0 else "")
-    
-    fig.tight_layout()
-    fname = "figure2_robustness.pdf" if xlabel == "Robustness" else "figure2_efficiency.pdf"
-    fig.savefig(fname, dpi=300)
-    plt.close(fig)
-
-# =============================================================================
-# Figure 3: Bar Plots with Means & Confidence Intervals
-# =============================================================================
-
-def compute_figure3_data(df: pd.DataFrame):
+def compute_figure2_data(df: pd.DataFrame):
     """
     Aggregate means and confidence intervals for each metric (duration, robustness, accuracy)
     per noise level and method.
@@ -300,14 +211,14 @@ def compute_figure3_data(df: pd.DataFrame):
         "results": results
     }
 
-def plot_figure3(fig3_data: dict):
+def plot_figure2(fig2_data: dict):
     """
     Plot bar charts (one subplot per metric) with means and confidence intervals.
     """
-    methods = fig3_data["methods"]
-    noise_levels = fig3_data["noise_levels"]
-    metrics = fig3_data["metrics"]
-    results = fig3_data["results"]
+    methods = fig2_data["methods"]
+    noise_levels = fig2_data["noise_levels"]
+    metrics = fig2_data["metrics"]
+    results = fig2_data["results"]
     
     fig, axs = plt.subplots(1, len(metrics), figsize=(15, 3))
     bar_width = 0.15
@@ -336,14 +247,14 @@ def plot_figure3(fig3_data: dict):
     
     fig.legend(handles, labels, loc='upper center', ncol=len(methods), bbox_to_anchor=(0.5, -0.1))
     fig.subplots_adjust(bottom=0.2)
-    fig.savefig("figure3.pdf", dpi=300, bbox_inches='tight')
+    fig.savefig("figure2.pdf", dpi=300, bbox_inches='tight')
     plt.close(fig)
 
 # =============================================================================
-# Figure 4: Bar Plots Split by Communities and Noise
+# Figure 3: Bar Plots Split by Communities and Noise
 # =============================================================================
 
-def compute_figure4_data(df: pd.DataFrame):
+def compute_figure3_data(df: pd.DataFrame):
     """
     Aggregate data for metrics split by number of communities and noise.
     """
@@ -375,14 +286,14 @@ def compute_figure4_data(df: pd.DataFrame):
         "results": results
     }
 
-def plot_figure4(fig4_data: dict):
+def plot_figure3(fig3_data: dict):
     """
     Plot bar charts for metrics split by communities for noise=0 (upper row) and noise=1 (lower row).
     """
-    methods = fig4_data["methods"]
-    communities = fig4_data["communities"]
-    metrics = fig4_data["metrics"]
-    results = fig4_data["results"]
+    methods = fig3_data["methods"]
+    communities = fig3_data["communities"]
+    metrics = fig3_data["metrics"]
+    results = fig3_data["results"]
     
     fig, axs = plt.subplots(2, len(metrics), figsize=(15, 6))
     bar_width = 0.15
@@ -414,7 +325,95 @@ def plot_figure4(fig4_data: dict):
     
     fig.legend(handles, labels, loc='upper center', ncol=len(methods), bbox_to_anchor=(0.5, -0.1))
     fig.subplots_adjust(bottom=0.1)
-    fig.savefig("figure4.pdf", dpi=300, bbox_inches='tight')
+    fig.savefig("figure3.pdf", dpi=300, bbox_inches='tight')
+    plt.close(fig)
+
+
+# =============================================================================
+# Common KDE Computation for Figure 4
+# =============================================================================
+
+def compute_kde2d_generic(xvals, yvals, X, Y):
+    """Compute 2D KDE for given x and y values over grid (X, Y)."""
+    if len(xvals) < 2:
+        return np.zeros_like(X)
+    kde = gaussian_kde(np.vstack([xvals, yvals]))
+    coords = np.vstack([X.ravel(), Y.ravel()])
+    return kde(coords).reshape(X.shape)
+
+def compute_kde_for_method(m_key, df_all, df_noisy, x_col, y_col, X, Y):
+    """
+    Compute KDEs for a given method using both the full dataset and the precomputed noisy subset.
+    """
+    sub_all = df_all[df_all['method'] == m_key]
+    sub_noisy = df_noisy[df_noisy['method'] == m_key]
+    Z_clean = compute_kde2d_generic(sub_all[x_col].values, sub_all[y_col].values, X, Y)
+    Z_noisy = compute_kde2d_generic(sub_noisy[x_col].values, sub_noisy[y_col].values, X, Y)
+    return m_key, Z_clean, Z_noisy
+
+def compute_figure4_data_common(df: pd.DataFrame, x_col: str, y_col: str, x_range: tuple, y_range: tuple, grid_size: int = 200):
+    """
+    Common function for computing KDE results for Figure 2.
+    Precomputes 'all' and 'noisy' subsets once, then computes KDEs for each method.
+    """
+    df_methods_all = df[df['method'].isin(METHODS_MAPPING.keys())]
+    df_methods_noisy = df_methods_all[df_methods_all['noise'] == 1]
+    xgrid = np.linspace(x_range[0], x_range[1], grid_size)
+    ygrid = np.linspace(y_range[0], y_range[1], grid_size)
+    X, Y = np.meshgrid(xgrid, ygrid)
+
+    results = Parallel(n_jobs=-1)(
+        delayed(compute_kde_for_method)(m_key, df_methods_all, df_methods_noisy, x_col, y_col, X, Y)
+        for m_key in METHODS_MAPPING
+    )
+    kde_results = {m_key: {"clean": Z_clean, "noisy": Z_noisy}
+                   for m_key, Z_clean, Z_noisy in results}
+    return X, Y, kde_results
+
+def compute_figure4a_robustness_data(df: pd.DataFrame):
+    """Wrapper for computing Figure 4 (Robustness): x-axis is 'robustness'."""
+    X, Y, kde_results = compute_figure4_data_common(df, x_col='robustness', y_col='accuracy', x_range=(0,1), y_range=(0,1))
+    return {"X": X, "Y": Y, "kde_results": kde_results}
+
+def compute_figure4b_efficiency_data(df: pd.DataFrame):
+    """Wrapper for computing Figure 4 (Efficiency): x-axis is 'duration'."""
+    df_methods_all = df[df['method'].isin(METHODS_MAPPING.keys())]
+    max_dur = df_methods_all['duration'].max() if not df_methods_all.empty else 1.0
+    X, Y, kde_results = compute_figure4_data_common(df, x_col='duration', y_col='accuracy', x_range=(0, max_dur), y_range=(0,1))
+    return {"X": X, "Y": Y, "kde_results": kde_results}
+
+def plot_figure4(fig4_data: dict, xlabel: str):
+    """
+    General plotting routine for Figure 2.
+    The upper row plots KDE for all data (clean) and the bottom row for the noisy subset.
+    'xlabel' should be "Robustness" or "Efficiency" accordingly.
+    """
+    X = fig2_data["X"]
+    Y = fig2_data["Y"]
+    kde_results = fig2_data["kde_results"]
+    n_methods = len(METHODS_MAPPING)
+    
+    fig, axs = plt.subplots(2, n_methods, figsize=(15, 6))
+    for j, (m_key, m_label) in enumerate(METHODS_MAPPING.items()):
+        # Upper row: all data (clean)
+        ax = axs[0, j]
+        Z = kde_results[m_key]["clean"]
+        if Z is not None and np.any(Z):
+            ax.contourf(X, Y, Z, levels=14, cmap=COLORMAP_DICT[m_key])
+        ax.set_title(m_label)
+        ax.set_xlabel(xlabel)
+        ax.set_ylabel("Accuracy" if j == 0 else "")
+        # Bottom row: noisy subset
+        ax2 = axs[1, j]
+        Z = kde_results[m_key]["noisy"]
+        if Z is not None and np.any(Z):
+            ax2.contourf(X, Y, Z, levels=14, cmap=COLORMAP_DICT[m_key])
+        ax2.set_xlabel(xlabel)
+        ax2.set_ylabel("Accuracy" if j == 0 else "")
+    
+    fig.tight_layout()
+    fname = "figure4a_robustness.pdf" if xlabel == "Robustness" else "figure4b_efficiency.pdf"
+    fig.savefig(fname, dpi=300)
     plt.close(fig)
 
 # =============================================================================
@@ -440,29 +439,29 @@ def main():
     plot_figure1(fig1_data)
     print("Done: figure1.pdf")
     
-    # Figure 2 (Robustness)
-    fig2_rob_file = os.path.join(PERSIST_DIR, "fig2_robustness_data.pkl")
-    fig2_rob_data = load_or_compute(fig2_rob_file, compute_figure2_robustness_data, df)
-    plot_figure2(fig2_rob_data, xlabel="Robustness")
-    print("Done: figure2_robustness.pdf")
-    
-    # Figure 2 (Efficiency)
-    fig2_eff_file = os.path.join(PERSIST_DIR, "fig2_efficiency_data.pkl")
-    fig2_eff_data = load_or_compute(fig2_eff_file, compute_figure2_efficiency_data, df)
-    plot_figure2(fig2_eff_data, xlabel="Efficiency")
-    print("Done: figure2_efficiency.pdf")
-    
-    # Figure 3
+    # Figure 2
     fig3_file = os.path.join(PERSIST_DIR, "fig3_data.pkl")
     fig3_data = load_or_compute(fig3_file, compute_figure3_data, df)
     plot_figure3(fig3_data)
-    print("Done: figure3.pdf")
+    print("Done: figure2.pdf")
     
-    # Figure 4
+    # Figure 3
     fig4_file = os.path.join(PERSIST_DIR, "fig4_data.pkl")
     fig4_data = load_or_compute(fig4_file, compute_figure4_data, df)
     plot_figure4(fig4_data)
-    print("Done: figure4.pdf")
+    print("Done: figure2.pdf")
+    
+    # Figure 4a (Robustness)
+    fig2_rob_file = os.path.join(PERSIST_DIR, "fig2_robustness_data.pkl")
+    fig2_rob_data = load_or_compute(fig2_rob_file, compute_figure2_robustness_data, df)
+    plot_figure2(fig2_rob_data, xlabel="Robustness")
+    print("Done: figure4a_robustness.pdf")
+    
+    # Figure 4b (Efficiency)
+    fig2_eff_file = os.path.join(PERSIST_DIR, "fig2_efficiency_data.pkl")
+    fig2_eff_data = load_or_compute(fig2_eff_file, compute_figure2_efficiency_data, df)
+    plot_figure2(fig2_eff_data, xlabel="Efficiency")
+    print("Done: figure4b_efficiency.pdf")
     
     print("All figures generated successfully.")
 
