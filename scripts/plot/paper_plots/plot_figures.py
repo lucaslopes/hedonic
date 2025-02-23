@@ -5,6 +5,7 @@ import argparse
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+import seaborn as sns
 from tqdm import tqdm
 from stopwatch import Stopwatch
 from scipy.stats import gaussian_kde
@@ -14,7 +15,6 @@ from scipy.interpolate import griddata
 # =============================================================================
 # Figure 1: Ground Truth Histograms and Heatmaps
 # =============================================================================
-
 def plot_figure1(df: pd.DataFrame, cmap: str = "BuPu"):
     # Use only GroundTruth rows
     gt_df = df[df['method'] == 'GroundTruth'].drop_duplicates()
@@ -89,20 +89,21 @@ def plot_figure1(df: pd.DataFrame, cmap: str = "BuPu"):
     cbar_ax = fig.add_axes([0.92, 0.15, 0.02, 0.7])
     fig.colorbar(im, cax=cbar_ax, label="Robustness")
     
-    fig.subplots_adjust(right=0.9, hspace=0.4)
-    fig.savefig("figure1.png", dpi=300)
+    fig.subplots_adjust(right=0.9, hspace=0.3, wspace=0.3)
+    # fig.subplots_adjust(right=0.88, wspace=0.3)
+    fig.savefig("figure1.pdf", dpi=300)
     plt.close(fig)
 
 # =============================================================================
-# Figure 2: Contour Plots for Methods (Excluding GroundTruth)
+# Figure 2 (robustness): Contour Plots for Methods (Excluding GroundTruth)
 # =============================================================================
-def plot_figure2(df):
+def plot_figure2_robustness(df):
     """
     Create Figure 2 with 2 rows x 5 columns of contour plots.
       - Only the 5 methods (excluding GroundTruth) are used:
           Spectral, Leiden, Hedonic, OnePass, Mirror.
       - Column subfigures represent the methods, relabeled as:
-          'Spectral Clustering', 'Leiden Algorithm', 'Hedonic Games', 'OnePass', 'Mirror'
+          'Spectral Clustering', 'Leiden (full-fledged)', 'Leiden (phase 1)', 'OnePass', 'Mirror'
       - First row: x-axis = Robustness (0-1), y-axis = Accuracy.
       - Second row: x-axis = Efficiency (duration), y-axis = Accuracy.
       - Only subplots in the left column show the y-axis label.
@@ -111,21 +112,24 @@ def plot_figure2(df):
     """
     # Mapping between internal method names and desired labels.
     methods_mapping = {
-        'Spectral': 'Spectral Clustering',
         'Leiden': 'Leiden (full-fledged)',
         'Hedonic': 'Leiden (phase 1)',
+        'Spectral': 'Spectral Clustering',
         'OnePass': 'OnePass',
         'Mirror': 'Mirror'
     }
-    # Define colormaps (avoid the color used in Fig1)
-    cmap_dict = {
-        'Spectral': "Reds",
-        'Leiden': "Blues",
-        'Hedonic': "Greens",
-        'OnePass': "Purples",
-        'Mirror': "Oranges"
+    
+    # Define distinct colormaps for each method.
+    # (These are standard matplotlib colormaps that you can change as needed.)
+    colormap_dict = {
+        'Leiden': 'Blues',
+        'Hedonic': 'Greens',
+        'Spectral': 'Oranges',
+        'OnePass': 'Reds',
+        'Mirror': 'Purples'
     }
-    # Filter to include only the 5 methods of interest.
+    
+    # Filter the dataframe to include only the methods of interest.
     df_methods = df[df['method'].isin(methods_mapping.keys())]
     figsize = (15, 6)
     fig, axs = plt.subplots(2, 5, figsize=figsize)
@@ -133,21 +137,19 @@ def plot_figure2(df):
     # Loop over each method/column.
     for j, (m_key, m_label) in enumerate(methods_mapping.items()):
         subset = df_methods[df_methods['method'] == m_key]
+        subset_noisy = subset[subset['noise'] == 1]
         
         # --- First row: x = Robustness, y = Accuracy ---
         ax = axs[0, j]
-        x = subset['robustness'].values
-        y = subset['accuracy'].values
-        if len(x) > 0:
-            # Estimate density via gaussian_kde
-            xy = np.vstack([x, y])
-            z = gaussian_kde(xy)(xy)
-            # Create a grid for interpolation
-            xi = np.linspace(0, 1, 100)
-            yi = np.linspace(y.min(), y.max(), 100)
-            xi, yi = np.meshgrid(xi, yi)
-            zi = griddata((x, y), z, (xi, yi), method='linear')
-            cont1 = ax.contourf(xi, yi, zi, levels=14, cmap=cmap_dict[m_key])
+        if not subset.empty:
+            sns.kdeplot(
+                x=subset['robustness'],
+                y=subset['accuracy'],
+                ax=ax,
+                fill=True,
+                levels=14,
+                cmap=colormap_dict[m_key]
+            )
         ax.set_title(m_label)
         ax.set_xlabel("Robustness")
         if j == 0:
@@ -155,18 +157,101 @@ def plot_figure2(df):
         else:
             ax.set_ylabel("")
         
+        # --- Second row: x = Robustness (robustness), y = Accuracy ---
+        ax2 = axs[1, j]
+        if not subset_noisy.empty:
+            sns.kdeplot(
+                x=subset_noisy['robustness'],
+                y=subset_noisy['accuracy'],
+                ax=ax2,
+                fill=True,
+                levels=14,
+                cmap=colormap_dict[m_key]
+            )
+        ax2.set_xlabel("Robustness")
+        if j == 0:
+            ax2.set_ylabel("Accuracy")
+        else:
+            ax2.set_ylabel("")
+    
+    fig.tight_layout()
+    fig.savefig("figure2_robustness.pdf", dpi=300)
+    plt.close(fig)
+
+# =============================================================================
+# Figure 2 (efficiency): Contour Plots for Methods (Excluding GroundTruth)
+# =============================================================================
+def plot_figure2_efficiency(df):
+    """
+    Create Figure 2 with 2 rows x 5 columns of contour plots.
+      - Only the 5 methods (excluding GroundTruth) are used:
+          Spectral, Leiden, Hedonic, OnePass, Mirror.
+      - Column subfigures represent the methods, relabeled as:
+          'Spectral Clustering', 'Leiden (full-fledged)', 'Leiden (phase 1)', 'OnePass', 'Mirror'
+      - First row: x-axis = Robustness (0-1), y-axis = Accuracy.
+      - Second row: x-axis = Efficiency (duration), y-axis = Accuracy.
+      - Only subplots in the left column show the y-axis label.
+      - Each method’s contour plot uses a unique color scheme (using standard colormaps
+        distinct from Fig. 1).
+    """
+    # Mapping between internal method names and desired labels.
+    methods_mapping = {
+        'Leiden': 'Leiden (full-fledged)',
+        'Hedonic': 'Leiden (phase 1)',
+        'Spectral': 'Spectral Clustering',
+        'OnePass': 'OnePass',
+        'Mirror': 'Mirror'
+    }
+    
+    # Define distinct colormaps for each method.
+    # (These are standard matplotlib colormaps that you can change as needed.)
+    colormap_dict = {
+        'Leiden': 'Blues',
+        'Hedonic': 'Greens',
+        'Spectral': 'Oranges',
+        'OnePass': 'Reds',
+        'Mirror': 'Purples'
+    }
+    
+    # Filter the dataframe to include only the methods of interest.
+    df_methods = df[df['method'].isin(methods_mapping.keys())]
+    figsize = (15, 6)
+    fig, axs = plt.subplots(2, 5, figsize=figsize)
+    
+    # Loop over each method/column.
+    for j, (m_key, m_label) in enumerate(methods_mapping.items()):
+        subset = df_methods[df_methods['method'] == m_key]
+        subset_noisy = subset[subset['noise'] == 1]
+        
+        # --- First row: x = Efficiency (duration), y = Accuracy ---
+        ax = axs[0, j]
+        if not subset.empty:
+            sns.kdeplot(
+                x=subset['duration'],
+                y=subset['accuracy'],
+                ax=ax,
+                fill=True,
+                levels=14,
+                cmap=colormap_dict[m_key]
+            )
+        ax.set_title(m_label)
+        ax.set_xlabel("Efficiency")
+        if j == 0:
+            ax.set_ylabel("Accuracy")
+        else:
+            ax.set_ylabel("")
+        
         # --- Second row: x = Efficiency (duration), y = Accuracy ---
         ax2 = axs[1, j]
-        x2 = subset['duration'].values
-        y2 = subset['accuracy'].values
-        if len(x2) > 0:
-            xy2 = np.vstack([x2, y2])
-            z2 = gaussian_kde(xy2)(xy2)
-            xi2 = np.linspace(x2.min(), x2.max(), 100)
-            yi2 = np.linspace(y2.min(), y2.max(), 100)
-            xi2, yi2 = np.meshgrid(xi2, yi2)
-            zi2 = griddata((x2, y2), z2, (xi2, yi2), method='linear')
-            cont2 = ax2.contourf(xi2, yi2, zi2, levels=14, cmap=cmap_dict[m_key])
+        if not subset_noisy.empty:
+            sns.kdeplot(
+                x=subset_noisy['duration'],
+                y=subset_noisy['accuracy'],
+                ax=ax2,
+                fill=True,
+                levels=14,
+                cmap=colormap_dict[m_key]
+            )
         ax2.set_xlabel("Efficiency")
         if j == 0:
             ax2.set_ylabel("Accuracy")
@@ -174,212 +259,165 @@ def plot_figure2(df):
             ax2.set_ylabel("")
     
     fig.tight_layout()
-    fig.savefig("figure2.png", dpi=300)
+    fig.savefig("figure2_efficiency.pdf", dpi=300)
     plt.close(fig)
 
 # =============================================================================
 # Figure 3: Bar Plots with Means and Confidence Intervals
 # =============================================================================
 def plot_figure3(df):
-    """
-    Create Figure 3 with 2 rows x 3 columns of bar plots.
-    
-      First row (x-axis = Noise [0-1]):
-        - Left: Y-axis = Efficiency
-        - Middle: Y-axis = Robustness
-        - Right: Y-axis = Accuracy
-
-      Second row (x-axis = Number of Communities):
-        - Left: Y-axis = Efficiency
-        - Middle: Y-axis = Robustness
-        - Right: Y-axis = Accuracy
-
-      For each x-axis value, plot 5 grouped bars (one for each method).
-      Methods: Spectral, Leiden, Hedonic, OnePass, Mirror (labeled as in Fig2)
-      Each bar shows the mean value and 95% CI.
-    """
-    # Use only the 5 methods (exclude GroundTruth)
-    methods = ['Spectral', 'Leiden', 'Hedonic', 'OnePass', 'Mirror']
+    methods = ['Leiden', 'Hedonic', 'Spectral', 'OnePass', 'Mirror']
+    cmap = plt.get_cmap('tab20b').colors
     methods_labels = {
-        'Spectral': 'Spectral Clustering',
         'Leiden': 'Leiden (full-fledged)',
         'Hedonic': 'Leiden (phase 1)',
+        'Spectral': 'Spectral Clustering',
         'OnePass': 'OnePass',
         'Mirror': 'Mirror'
     }
-    # Use the same colormaps (here using solid colors) as in Fig2.
+    idx=2
     color_dict = {
-        'Spectral': "red",
-        'Leiden': "blue",
-        'Hedonic': "green",
-        'OnePass': "purple",
-        'Mirror': "orange"
+        'Leiden': cmap[idx],
+        'Hedonic': cmap[idx+4],
+        'Spectral': cmap[idx+8],
+        'OnePass': cmap[idx+12],
+        'Mirror': cmap[idx+16]
     }
     df_methods = df[df['method'].isin(methods)]
     
-    # Define the metrics to plot and their display names.
-    # For bar plots, we use:
-    # - Efficiency: duration (y-axis label "Efficiency")
-    # - Robustness: robustness (y-axis label "Robustness")
-    # - Accuracy: accuracy (y-axis label "Accuracy")
     metrics = ['duration', 'robustness', 'accuracy']
     metric_names = {'duration': 'Efficiency', 'robustness': 'Robustness', 'accuracy': 'Accuracy'}
     
-    # Set common figure size
     figsize = (15, 3)
     fig, axs = plt.subplots(1, 3, figsize=figsize)
     
-    # --- First row: Group by Noise ---
     noise_levels = sorted(df_methods['noise'].unique())
-    # For each subplot (one metric per column)
+    bar_width = 0.15
+    indices = np.arange(len(noise_levels))
+
+    handles, labels = [], []
+    
     for col in range(3):
         ax = axs[col]
-        # Width for each grouped bar
-        bar_width = 0.15
-        indices = np.arange(len(noise_levels))
         for i, m in enumerate(methods):
-            means = []
-            cis = []
+            means, cis = [], []
             for noise in noise_levels:
                 sub = df_methods[(df_methods['noise'] == noise) & (df_methods['method'] == m)]
-                if len(sub) > 0:
-                    mean_val = sub[metrics[col]].mean()
-                    std_val = sub[metrics[col]].std()
-                    n = len(sub)
-                    ci = 1.96 * std_val / np.sqrt(n)
-                else:
-                    mean_val = np.nan
-                    ci = 0
+                mean_val, ci = (sub[metrics[col]].mean(), 1.96 * sub[metrics[col]].std() / np.sqrt(len(sub))) if len(sub) > 0 else (np.nan, 0)
                 means.append(mean_val)
                 cis.append(ci)
-            ax.bar(indices + i * bar_width, means, width=bar_width, yerr=cis,
-                   label=methods_labels[m], color=color_dict[m], capsize=3)
+            
+            bars = ax.bar(indices + i * bar_width, means, width=bar_width, yerr=cis,
+                          color=color_dict[m], capsize=3, label=methods_labels[m] if col == 0 else "_nolegend_")
+            if col == 0:
+                handles.append(bars[0])
+                labels.append(methods_labels[m])
+        
         ax.set_xticks(indices + bar_width * (len(methods) - 1) / 2)
         ax.set_xticklabels([f"{noise:.2f}" for noise in noise_levels])
         ax.set_xlabel("Noise")
         ax.set_ylabel(metric_names[metrics[col]])
         ax.set_title(metric_names[metrics[col]])
-        ax.legend(fontsize='small')
     
     fig.tight_layout()
-    fig.savefig("figure3.png", dpi=300)
+    
+    # Add the single legend and adjust layout to avoid cropping
+    fig.legend(handles, labels, loc='upper center', ncol=len(methods), bbox_to_anchor=(0.5, -0.1))
+    fig.subplots_adjust(bottom=0.1)  # Adjust top margin
+
+    fig.savefig("figure3.pdf", dpi=300, bbox_inches='tight')
     plt.close(fig)
 
 # =============================================================================
 # Figure 4: Bar Plots with Means and Confidence Intervals
 # =============================================================================
 def plot_figure4(df):
-    """
-    Create Figure 4 with 2 rows x 3 columns of bar plots.
-    
-      First row (x-axis = Noise [0-1]):
-        - Left: Y-axis = Efficiency
-        - Middle: Y-axis = Robustness
-        - Right: Y-axis = Accuracy
-
-      Second row (x-axis = Number of Communities):
-        - Left: Y-axis = Efficiency
-        - Middle: Y-axis = Robustness
-        - Right: Y-axis = Accuracy
-
-      For each x-axis value, plot 5 grouped bars (one for each method).
-      Methods: Spectral, Leiden, Hedonic, OnePass, Mirror (labeled as in Fig2)
-      Each bar shows the mean value and 95% CI.
-    """
-    # Use only the 5 methods (exclude GroundTruth)
-    methods = ['Spectral', 'Leiden', 'Hedonic', 'OnePass', 'Mirror']
+    methods = ['Leiden', 'Hedonic', 'Spectral', 'OnePass', 'Mirror']
+    cmap = plt.get_cmap('tab20b').colors
     methods_labels = {
-        'Spectral': 'Spectral Clustering',
         'Leiden': 'Leiden (full-fledged)',
         'Hedonic': 'Leiden (phase 1)',
+        'Spectral': 'Spectral Clustering',
         'OnePass': 'OnePass',
         'Mirror': 'Mirror'
     }
-    # Use the same colormaps (here using solid colors) as in Fig2.
+    idx=2
     color_dict = {
-        'Spectral': "red",
-        'Leiden': "blue",
-        'Hedonic': "green",
-        'OnePass': "purple",
-        'Mirror': "orange"
+        'Leiden': cmap[idx],
+        'Hedonic': cmap[idx+4],
+        'Spectral': cmap[idx+8],
+        'OnePass': cmap[idx+12],
+        'Mirror': cmap[idx+16]
     }
     df_methods = df[df['method'].isin(methods)]
     
-    # Define the metrics to plot and their display names.
-    # For bar plots, we use:
-    # - Efficiency: duration (y-axis label "Efficiency")
-    # - Robustness: robustness (y-axis label "Robustness")
-    # - Accuracy: accuracy (y-axis label "Accuracy")
     metrics = ['duration', 'robustness', 'accuracy']
     metric_names = {'duration': 'Efficiency', 'robustness': 'Robustness', 'accuracy': 'Accuracy'}
     
-    # Set common figure size
     figsize = (15, 6)
     fig, axs = plt.subplots(2, 3, figsize=figsize)
     
-    # --- First row: Group by Noise ---
     communities = sorted(df_methods['number_of_communities'].unique())
-    for col in range(3):
-        ax = axs[0, col]
-        bar_width = 0.15
-        indices = np.arange(len(communities))
-        for i, m in enumerate(methods):
-            means = []
-            cis = []
-            for nc in communities:
-                sub = df_methods[(df_methods['number_of_communities'] == nc) & (df_methods['method'] == m)]
-                if len(sub) > 0:
-                    mean_val = sub[metrics[col]].mean()
-                    std_val = sub[metrics[col]].std()
-                    n = len(sub)
-                    ci = 1.96 * std_val / np.sqrt(n)
-                else:
-                    mean_val = np.nan
-                    ci = 0
-                means.append(mean_val)
-                cis.append(ci)
-            ax.bar(indices + i * bar_width, means, width=bar_width, yerr=cis,
-                   label=methods_labels[m], color=color_dict[m], capsize=3)
-        ax.set_xticks(indices + bar_width * (len(methods) - 1) / 2)
-        ax.set_xticklabels([str(nc) for nc in communities])
-        # ax.set_xlabel("Number of Communities")
-        ax.set_ylabel(metric_names[metrics[col]])
-        # ax.set_title(metric_names[metrics[col]])
-        ax.legend(fontsize='small')
-    
-    # --- Second row: Group by Number of Communities ---
-    communities = sorted(df_methods['number_of_communities'].unique())
-    for col in range(3):
-        ax = axs[1, col]
-        bar_width = 0.15
-        indices = np.arange(len(communities))
-        for i, m in enumerate(methods):
-            means = []
-            cis = []
-            for nc in communities:
-                sub = df_methods[(df_methods['number_of_communities'] == nc) & (df_methods['method'] == m)]
-                if len(sub) > 0:
-                    mean_val = sub[metrics[col]].mean()
-                    std_val = sub[metrics[col]].std()
-                    n = len(sub)
-                    ci = 1.96 * std_val / np.sqrt(n)
-                else:
-                    mean_val = np.nan
-                    ci = 0
-                means.append(mean_val)
-                cis.append(ci)
-            ax.bar(indices + i * bar_width, means, width=bar_width, yerr=cis,
-                   label=methods_labels[m], color=color_dict[m], capsize=3)
-        ax.set_xticks(indices + bar_width * (len(methods) - 1) / 2)
-        ax.set_xticklabels([str(nc) for nc in communities])
-        ax.set_xlabel("Number of Communities")
-        ax.set_ylabel(metric_names[metrics[col]])
-        # ax.set_title(metric_names[metrics[col]])
-        ax.legend(fontsize='small')
+    bar_width = 0.15
+    indices = np.arange(len(communities))
+
+    handles, labels = [], []
+
+    for row in range(2):
+        if row == 1:
+            df_methods = df_methods[df_methods['noise'] == 1.0]
+        for col in range(3):
+            ax = axs[row, col]
+            for i, m in enumerate(methods):
+                means, cis = [], []
+                for nc in communities:
+                    sub = df_methods[(df_methods['number_of_communities'] == nc) & (df_methods['method'] == m)]
+                    mean_val, ci = (sub[metrics[col]].mean(), 1.96 * sub[metrics[col]].std() / np.sqrt(len(sub))) if len(sub) > 0 else (np.nan, 0)
+                    means.append(mean_val)
+                    cis.append(ci)
+                
+                bars = ax.bar(indices + i * bar_width, means, width=bar_width, yerr=cis,
+                              color=color_dict[m], capsize=3, label=methods_labels[m] if (row, col) == (0, 0) else "_nolegend_")
+                if (row, col) == (0, 0):
+                    handles.append(bars[0])
+                    labels.append(methods_labels[m])
+
+            ax.set_xticks(indices + bar_width * (len(methods) - 1) / 2)
+            ax.set_xticklabels([str(nc) for nc in communities])
+            if row == 1:
+                ax.set_xlabel("Number of Communities")
+            else:
+                ax.set_title(metric_names[metrics[col]])
+            ax.set_ylabel(metric_names[metrics[col]])
     
     fig.tight_layout()
-    fig.savefig("figure4.png", dpi=300)
+
+    # Add the single legend and adjust layout to avoid cropping
+    fig.legend(handles, labels, loc='upper center', ncol=len(methods), bbox_to_anchor=(0.5, -0.1))
+    fig.subplots_adjust(bottom=0)  # Adjust top margin
+
+    fig.savefig("figure4.pdf", dpi=300, bbox_inches='tight')
     plt.close(fig)
+
+def include_spectral(df):
+    # Get unique noise values excluding 0.1
+    unique_noise_values = df['noise'].unique()
+    unique_noise_values = [n for n in unique_noise_values if n != 0.1]
+
+    # Filter rows where method is 'Spectral' and noise is 0.1
+    spectral_rows = df[(df['method'] == 'Spectral') & (df['noise'] == 0.1)]
+
+    # Create new rows by copying and updating the noise values
+    new_rows = []
+    for noise in unique_noise_values:
+        temp = spectral_rows.copy()
+        temp['noise'] = noise
+        new_rows.append(temp)
+
+    # Append new rows to the original DataFrame
+    df = pd.concat([df] + new_rows, ignore_index=True)
+    return df
+
 
 # =============================================================================
 # Main
@@ -391,30 +429,34 @@ if __name__ == "__main__":
     dir_path = args.path
     sw = Stopwatch()
     sw.start()
-    df = pd.read_parquet(dir_path)
+    if False:
+        df = pd.read_parquet(dir_path)
+    else:
+        df = pd.read_csv(dir_path.replace(".parquet", ".csv.gzip"), compression="gzip")
     sw.stop()
     print(f"Loaded {dir_path} in {sw.duration}s")
+    df = include_spectral(df)
     # Create the three figures
     sw.reset()
     sw.start()
-    plot_figure1(df)
+    # plot_figure1(df)
     sw.stop()
-    print(f"Generated figure1.png in {sw.duration}s")
+    print(f"Generated figure1.pdf in {sw.duration}s")
     sw.reset()
     sw.start()
-    # plot_figure2(df)
+    plot_figure2(df)
     sw.stop()
-    print(f"Generated figure2.png in {sw.duration}s")
+    print(f"Generated figure2.pdf in {sw.duration}s")
     sw.reset()
     sw.start()
     # plot_figure3(df)
     sw.stop()
-    print(f"Generated figure3.png in {sw.duration}s")
+    print(f"Generated figure3.pdf in {sw.duration}s")
     sw.reset()
     sw.start()
     # plot_figure4(df)
     sw.stop()
-    print(f"Generated figure4.png in {sw.duration}s")
+    print(f"Generated figure4.pdf in {sw.duration}s")
     
-    print("Figures generated and saved as figure1.png, figure2.png, and figure3.png")
+    print("Figures generated and saved as figure1.pdf, figure2.pdf, and figure3.pdf")
 
