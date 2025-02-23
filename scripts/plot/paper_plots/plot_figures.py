@@ -24,6 +24,7 @@ import seaborn as sns
 
 from tqdm import tqdm
 from scipy.stats import gaussian_kde
+# from sklearn.neighbors import KernelDensity
 from joblib import Parallel, delayed
 
 # =============================================================================
@@ -330,19 +331,32 @@ def plot_figure3(fig3_data: dict, filename: str = "figure3", fig_dir: str = None
 # =============================================================================
 
 def compute_kde2d_generic(xvals, yvals, X, Y):
-    """Compute 2D KDE for given x and y values over grid (X, Y)."""
     if len(xvals) < 2:
         return np.zeros_like(X)
-    kde = gaussian_kde(np.vstack([xvals, yvals]))
+    kde = gaussian_kde(np.vstack([xvals, yvals]), bw_method=0.2)
     coords = np.vstack([X.ravel(), Y.ravel()])
     return kde(coords).reshape(X.shape)
 
-def compute_kde_for_method(m_key, df_all, df_noisy, x_col, y_col, X, Y):
+# def compute_kde2d_generic(xvals, yvals, X, Y):
+#     if len(xvals) < 2:
+#         return np.zeros_like(X)
+#     kde = KernelDensity(kernel='gaussian', bandwidth=0.1)  # Adjust bandwidth as needed
+#     coords = np.vstack([xvals, yvals]).T
+#     kde.fit(coords)
+#     grid_coords = np.vstack([X.ravel(), Y.ravel()]).T
+#     Z = np.exp(kde.score_samples(grid_coords))  # Convert log-density to density
+#     return Z.reshape(X.shape)
+
+def compute_kde_for_method(m_key, df_all, df_noisy, x_col, y_col, X, Y, sampling=False, seed=42):
     """
     Compute KDEs for a given method using both the full dataset and the precomputed noisy subset.
     """
-    sub_all = df_all[df_all['method'] == m_key]
-    sub_noisy = df_noisy[df_noisy['method'] == m_key]
+    if sampling:
+        sub_all = df_all[df_all['method'] == m_key].sample(n=min(10000, len(df_all)), random_state=seed)  # Subsample to 10k
+        sub_noisy = df_noisy[df_noisy['method'] == m_key].sample(n=min(10000, len(df_noisy)), random_state=seed)
+    else:
+        sub_all = df_all[df_all['method'] == m_key]
+        sub_noisy = df_noisy[df_noisy['method'] == m_key]
     Z_clean = compute_kde2d_generic(sub_all[x_col].values, sub_all[y_col].values, X, Y)
     Z_noisy = compute_kde2d_generic(sub_noisy[x_col].values, sub_noisy[y_col].values, X, Y)
     return m_key, Z_clean, Z_noisy
@@ -361,7 +375,7 @@ def precompute_subsets(df: pd.DataFrame, precomputed_all=None, precomputed_noisy
         df_methods_noisy = precomputed_noisy
     return df_methods_all, df_methods_noisy
 
-def compute_figure4_data_common(df: pd.DataFrame, x_col: str, y_col: str, x_range: tuple, y_range: tuple, grid_size: int = 200, x_axis_log: bool = False,
+def compute_figure4_data_common(df: pd.DataFrame, x_col: str, y_col: str, x_range: tuple, y_range: tuple, grid_size: int = 100, x_axis_log: bool = False,
                                 precomputed_all=None, precomputed_noisy=None):
     """
     Common function for computing KDE results for Figure 4.
