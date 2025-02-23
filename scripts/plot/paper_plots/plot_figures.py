@@ -184,17 +184,15 @@ def compute_figure2_data(df: pd.DataFrame):
     Aggregate means and confidence intervals for each metric (duration, robustness, accuracy)
     per noise level and method.
     """
-    methods = list(METHODS_MAPPING.keys())
-    df_methods = df[df['method'].isin(methods)]
-    noise_levels = sorted(df_methods['noise'].unique())
+    noise_levels = sorted(df['noise'].unique())
     metrics = ['duration', 'robustness', 'accuracy']
     results = {metric: {} for metric in metrics}
     
     for metric in metrics:
-        for meth in methods:
+        for meth in METHODS_MAPPING:
             rows = []
             for nl in noise_levels:
-                sub = df_methods[(df_methods['noise'] == nl) & (df_methods['method'] == meth)]
+                sub = df[(df['noise'] == nl) & (df['method'] == meth)]
                 if sub.empty:
                     mean_val, ci = np.nan, 0
                 else:
@@ -204,7 +202,7 @@ def compute_figure2_data(df: pd.DataFrame):
             results[metric][meth] = rows
 
     return {
-        "methods": methods,
+        "methods": METHODS_MAPPING.keys(),
         "noise_levels": noise_levels,
         "metrics": metrics,
         "results": results
@@ -257,15 +255,7 @@ def compute_figure3_data(df: pd.DataFrame, precomputed_all=None, precomputed_noi
     """
     Aggregate data for metrics split by number of communities and noise.
     """
-    methods = list(METHODS_MAPPING.keys())
-    if precomputed_all is None:
-        df_methods_all = df[df['method'].isin(methods)]
-    else:
-        df_methods_all = precomputed_all
-    if precomputed_noisy is None:
-        df_methods_noisy = df_methods_all[df_methods_all['noise'] == 1]
-    else:
-        df_methods_noisy = precomputed_noisy
+    df_methods_all, df_methods_noisy = precompute_subsets(df, precomputed_all, precomputed_noisy)
     communities = sorted(df_methods_all['number_of_communities'].unique())
     metrics = ['duration', 'robustness', 'accuracy']
     results = {0: {metric: {} for metric in metrics}, 1: {metric: {} for metric in metrics}}
@@ -273,7 +263,7 @@ def compute_figure3_data(df: pd.DataFrame, precomputed_all=None, precomputed_noi
     for noise_val in [0, 1]:
         subset = df_methods_noisy if noise_val == 1 else df_methods_all
         for metric in metrics:
-            for meth in methods:
+            for meth in METHODS_MAPPING:
                 rows = []
                 for nc in communities:
                     sub = subset[(subset['number_of_communities'] == nc) & (subset['method'] == meth)]
@@ -286,7 +276,7 @@ def compute_figure3_data(df: pd.DataFrame, precomputed_all=None, precomputed_noi
                 results[noise_val][metric][meth] = rows
 
     return {
-        "methods": methods,
+        "methods": METHODS_MAPPING.keys(),
         "communities": communities,
         "metrics": metrics,
         "results": results
@@ -357,12 +347,9 @@ def compute_kde_for_method(m_key, df_all, df_noisy, x_col, y_col, X, Y):
     Z_noisy = compute_kde2d_generic(sub_noisy[x_col].values, sub_noisy[y_col].values, X, Y)
     return m_key, Z_clean, Z_noisy
 
-
-def compute_figure4_data_common(df: pd.DataFrame, x_col: str, y_col: str, x_range: tuple, y_range: tuple, grid_size: int = 200, x_axis_log: bool = False,
-                                precomputed_all=None, precomputed_noisy=None):
+def precompute_subsets(df: pd.DataFrame, precomputed_all=None, precomputed_noisy=None):
     """
-    Common function for computing KDE results for Figure 4.
-    Precomputes 'all' and 'noisy' subsets once, then computes KDEs for each method.
+    Precompute the subsets 'all' and 'noisy' for all methods.
     """
     if precomputed_all is None:
         df_methods_all = df[df['method'].isin(METHODS_MAPPING.keys())]
@@ -372,6 +359,15 @@ def compute_figure4_data_common(df: pd.DataFrame, x_col: str, y_col: str, x_rang
         df_methods_noisy = df_methods_all[df_methods_all['noise'] == 1]
     else:
         df_methods_noisy = precomputed_noisy
+    return df_methods_all, df_methods_noisy
+
+def compute_figure4_data_common(df: pd.DataFrame, x_col: str, y_col: str, x_range: tuple, y_range: tuple, grid_size: int = 200, x_axis_log: bool = False,
+                                precomputed_all=None, precomputed_noisy=None):
+    """
+    Common function for computing KDE results for Figure 4.
+    Precomputes 'all' and 'noisy' subsets once, then computes KDEs for each method.
+    """
+    df_methods_all, df_methods_noisy = precompute_subsets(df, precomputed_all, precomputed_noisy)
     xgrid = np.linspace(x_range[0], x_range[1], grid_size)
     ygrid = np.linspace(y_range[0], y_range[1], grid_size)
     X, Y = np.meshgrid(xgrid, ygrid)
@@ -462,8 +458,6 @@ def main():
     
     print(f"Loading data from {data_path} ...")
     df = load_data(data_path)
-    df = include_spectral(df)
-    df_methods_all, df_methods_noisy = precompute_fig4_subsets(df)
     print(f"Data loaded. Rows = {len(df)}")
 
     # Figure 1
@@ -475,10 +469,15 @@ def main():
     gc.collect()
     print("Done: figure1.pdf")
     
+    # Precompute subsets for Figures 2-4
+    df_methods_all, df_methods_noisy = precompute_fig4_subsets(include_spectral(df))
+    del df
+    gc.collect()
+    
     # Figure 2
     print("Plotting figure 2...")
     fig2_file = os.path.join(PERSIST_DIR, "fig2_data.pkl")
-    fig2_data = load_or_compute(fig2_file, compute_figure2_data, df)
+    fig2_data = load_or_compute(fig2_file, compute_figure2_data, df_methods_all)
     plot_figure2(fig2_data, "noise", fig_dir)
     del fig2_data
     gc.collect()
@@ -487,7 +486,7 @@ def main():
     # Figure 3
     print("Plotting figure 3...")
     fig3_file = os.path.join(PERSIST_DIR, "fig3_data.pkl")
-    fig3_data = load_or_compute(fig3_file, compute_figure3_data, df, precomputed_all=df_methods_all, precomputed_noisy=df_methods_noisy)
+    fig3_data = load_or_compute(fig3_file, compute_figure3_data, df=None, precomputed_all=df_methods_all, precomputed_noisy=df_methods_noisy)
     plot_figure3(fig3_data, "n_communities", fig_dir)
     del fig3_data
     gc.collect()
@@ -498,7 +497,7 @@ def main():
     fig4a_rob_file = os.path.join(PERSIST_DIR, "fig4a_robustness_data.pkl")
     fig4a_rob_data = load_or_compute(
         fig4a_rob_file, compute_figure4a_robustness_data, 
-        df, precomputed_all=df_methods_all, precomputed_noisy=df_methods_noisy
+        df=None, precomputed_all=df_methods_all, precomputed_noisy=df_methods_noisy
     )
     plot_figure4(fig4a_rob_data, xlabel="Robustness", fig_dir=fig_dir)
     del fig4a_rob_data
@@ -510,7 +509,7 @@ def main():
     fig4b_eff_file = os.path.join(PERSIST_DIR, "fig4b_efficiency_data.pkl")
     fig4b_eff_data = load_or_compute(
         fig4b_eff_file, compute_figure4b_efficiency_data, 
-        df, precomputed_all=df_methods_all, precomputed_noisy=df_methods_noisy
+        df=None, precomputed_all=df_methods_all, precomputed_noisy=df_methods_noisy
     )
     plot_figure4(fig4b_eff_data, xlabel="Efficiency", fig_dir=fig_dir)
     del fig4b_eff_data
