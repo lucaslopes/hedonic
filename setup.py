@@ -9,6 +9,8 @@ setup(
     'ipython',
     'tqdm',
     'stopwatch.py',
+    'pyarrow',
+    'joblib',
     'numpy>=1.19.0',
     'pandas>=1.1.0',
     'networkx>=2.5',
