@@ -36,7 +36,7 @@ METHODS_MAPPING = {
     'Leiden': 'Leiden (full-fledged)',
     'Hedonic': 'Leiden (phase 1)',
     'Spectral': 'Spectral Clustering',
-    'OnePass': 'OnePass',
+    'OnePass': 'One Pass',
     'Mirror': 'Mirror'
 }
 
@@ -148,7 +148,7 @@ def plot_figure1(data: dict, filename: str = "figure1", fig_dir: str = None):
     heatmaps = data["heatmaps"]
     cmap = "BuPu"  # Alternatively, use data["cmap"]
 
-    fig, axs = plt.subplots(2, len(communities), figsize=(15, 6))
+    fig, axs = plt.subplots(2, len(communities), figsize=(16, 5))
     
     hist_color = plt.get_cmap(cmap+'_r')(0)
     for i, (nc, subset, counts) in enumerate(hist_data):
@@ -173,6 +173,7 @@ def plot_figure1(data: dict, filename: str = "figure1", fig_dir: str = None):
     cbar_ax = fig.add_axes([0.92, 0.15, 0.02, 0.7])
     fig.colorbar(im, cax=cbar_ax, label="Robustness")
     fig.subplots_adjust(right=0.9, hspace=0.3, wspace=0.3)
+    fig.tight_layout(rect=[0, 0, 0.9, 1])
     fig.savefig(os.path.join(fig_dir, f"{filename}.pdf"), dpi=300)
     plt.close(fig)
 
@@ -218,12 +219,13 @@ def plot_figure2(fig2_data: dict, filename: str = "figure2", fig_dir: str = None
     metrics = fig2_data["metrics"]
     results = fig2_data["results"]
     
-    fig, axs = plt.subplots(1, len(metrics), figsize=(15, 3))
+    fig, axs = plt.subplots(1, len(metrics), figsize=(15, 2))
     bar_width = 0.15
     indices = np.arange(len(noise_levels))
     handles, labels = [], []
     
-    metric_names = {'duration': 'Efficiency', 'robustness': 'Robustness', 'accuracy': 'Accuracy'}
+    metric_title = {'duration': 'Efficiency', 'robustness': 'Robustness', 'accuracy': 'Accuracy'}
+    metric_names = {'duration': 'Time', 'robustness': 'Robustness', 'accuracy': 'Rand Index'}
     
     for col, metric in enumerate(metrics):
         ax = axs[col]
@@ -241,7 +243,7 @@ def plot_figure2(fig2_data: dict, filename: str = "figure2", fig_dir: str = None
         ax.set_xticklabels([f"{n:.2f}" for n in noise_levels])
         ax.set_xlabel("Noise")
         ax.set_ylabel(metric_names[metric])
-        ax.set_title(metric_names[metric])
+        ax.set_title(metric_title[metric])
     
     fig.legend(handles, labels, loc='upper center', ncol=len(methods), bbox_to_anchor=(0.5, -0.1))
     fig.subplots_adjust(bottom=0.1)
@@ -292,12 +294,13 @@ def plot_figure3(fig3_data: dict, filename: str = "figure3", fig_dir: str = None
     metrics = fig3_data["metrics"]
     results = fig3_data["results"]
     
-    fig, axs = plt.subplots(2, len(metrics), figsize=(15, 6))
+    fig, axs = plt.subplots(2, len(metrics), figsize=(15, 4))
     bar_width = 0.15
     indices = np.arange(len(communities))
     handles, labels = [], []
     
-    metric_names = {'duration': 'Efficiency', 'robustness': 'Robustness', 'accuracy': 'Accuracy'}
+    metric_title = {'duration': 'Efficiency', 'robustness': 'Robustness', 'accuracy': 'Accuracy'}
+    metric_names = {'duration': 'Time', 'robustness': 'Robustness', 'accuracy': 'Rand Index'}
     
     for row, noise_val in enumerate([0, 1]):
         for col, metric in enumerate(metrics):
@@ -315,7 +318,7 @@ def plot_figure3(fig3_data: dict, filename: str = "figure3", fig_dir: str = None
             ax.set_xticks(indices + bar_width * (len(methods)-1) / 2)
             ax.set_xticklabels([str(nc) for nc in communities])
             if row == 0:
-                ax.set_title(metric_names[metric])
+                ax.set_title(metric_title[metric])
             if row == 1:
                 ax.set_xlabel("Number of Communities")
             ax.set_ylabel(metric_names[metric])
@@ -439,14 +442,14 @@ def plot_figure4(fig4_data: dict, xlabel: str, fig_dir: str = None):
             ax.contourf(X, Y, Z, levels=14, cmap=COLORMAP_DICT[m_key])
         ax.set_title(m_label)
         ax.set_xlabel(xlabel)
-        ax.set_ylabel("Accuracy" if j == 0 else "")
+        ax.set_ylabel("Rand Index" if j == 0 else "")
         # Bottom row: noisy subset
         ax2 = axs[1, j]
         Z = kde_results[m_key]["noisy"]
         if Z is not None and np.any(Z):
             ax2.contourf(X, Y, Z, levels=14, cmap=COLORMAP_DICT[m_key])
         ax2.set_xlabel(xlabel)
-        ax2.set_ylabel("Accuracy" if j == 0 else "")
+        ax2.set_ylabel("Rand Index" if j == 0 else "")
     
     fig.tight_layout()
     fname = "acc_robustness.pdf" if xlabel == "Robustness" else "acc_efficiency.pdf"
@@ -525,7 +528,7 @@ def main():
         fig4b_eff_file, compute_figure4b_efficiency_data, 
         df=None, precomputed_all=df_methods_all, precomputed_noisy=df_methods_noisy
     )
-    plot_figure4(fig4b_eff_data, xlabel="Efficiency", fig_dir=fig_dir)
+    plot_figure4(fig4b_eff_data, xlabel="Time", fig_dir=fig_dir)
     del fig4b_eff_data
     gc.collect()
     print("Done: figure4b_efficiency.pdf")
