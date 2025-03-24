@@ -22,6 +22,19 @@ class Game(Graph):
       # Copy graph attributes
       for attr in graph.attributes():
         self[attr] = graph[attr]
+    
+  def to_igraph(self):
+    """Convert the Game object to an igraph.Graph object."""
+    g = Graph()
+    g.add_vertices(self.vcount())
+    g.add_edges(self.get_edgelist())
+    for attr in self.vertex_attributes():
+      g.vs[attr] = self.vs[attr]
+    for attr in self.edge_attributes():
+      g.es[attr] = self.es[attr]
+    for attr in self.attributes():
+      g[attr] = self[attr]
+    return g
 
   def hedonic_value(self, neighbors, strangers, resolution):
     pros = neighbors * (1-resolution) # prosocial value
@@ -221,6 +234,7 @@ class Game(Graph):
     while not self.in_equibrium(resolution):
       # Initialize the queue with all nodes
       queue = [node.index for node in self.vs]
+      np.random.shuffle(queue)
       in_queue = set(queue)  # Track nodes in the queue to avoid duplicates
       
       while queue:
