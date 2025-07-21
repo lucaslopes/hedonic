@@ -62,10 +62,10 @@ p4b = g.community_hedonic_queue(
 )
 
 
-print(ig.compare_communities(p1a, p1b, method="rand"))
-print(ig.compare_communities(p2a, p2b, method="rand"))
-print(ig.compare_communities(p3a, p3b, method="rand"))
-print(ig.compare_communities(p4a, p4b, method="rand"))
+print(ig.compare_communities(p1a, p1b, method="adjusted_rand"))
+print(ig.compare_communities(p2a, p2b, method="adjusted_rand"))
+print(ig.compare_communities(p3a, p3b, method="adjusted_rand"))
+print(ig.compare_communities(p4a, p4b, method="adjusted_rand"))
 
 print("Partition 1a:", g.equilibrium_fraction(g.density(), p1a.membership), Counter(p1a.membership))
 print("Partition 1b:", g.equilibrium_fraction(g.density(), p1b.membership), Counter(p1b.membership))

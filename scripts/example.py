@@ -33,7 +33,7 @@ if (real_data := True):
         subset = {j for i in community for j in g.neighbors(i)}.union(set(community))
         for i in subset:
             g.vs[i]["label"] = i
-        new_g = g.subgraph(subset)
+        new_g: ig.Graph = g.subgraph(subset)
         initial_membership = np.zeros(len(subset), dtype=int)
         for i in community:
             index = new_g.vs.find(label=i).index
@@ -47,7 +47,7 @@ if (real_data := True):
         new_g.initialize_game(p3.membership)
         counts['leiden'] += new_g.in_equibrium(density)
         durations['leiden'] += stopwatch.duration
-        print('community_leiden:', stopwatch.duration, new_g.in_equibrium(density), ig.compare_communities(p3, initial_membership, method="rand"))
+        print('community_leiden:', stopwatch.duration, new_g.in_equibrium(density), ig.compare_communities(p3, initial_membership, method="adjusted_rand"))
 
         stopwatch.reset()
         stopwatch.start()
@@ -56,7 +56,7 @@ if (real_data := True):
         stopwatch.stop()
         counts['leiden_hedonic'] += new_g.in_equibrium(density)
         durations['leiden_hedonic'] += stopwatch.duration
-        print('community_leiden_hedonic:', stopwatch.duration, new_g.in_equibrium(density), ig.compare_communities(p4, initial_membership, method="rand"))
+        print('community_leiden_hedonic:', stopwatch.duration, new_g.in_equibrium(density), ig.compare_communities(p4, initial_membership, method="adjusted_rand"))
 
 
 if (synthetic := False):
@@ -75,7 +75,7 @@ if (synthetic := False):
         # stopwatch.stop()
         # counts['hedonic_queue'] += g.in_equibrium(density)
         # durations['hedonic_queue'] += stopwatch.duration
-        # # print('community_hedonic:', stopwatch.duration, g.in_equibrium(density), ig.compare_communities(p1, gt, method="rand"))
+        # # print('community_hedonic:', stopwatch.duration, g.in_equibrium(density), ig.compare_communities(p1, gt, method="adjusted_rand"))
 
         # stopwatch.reset()
         # stopwatch.start()
@@ -83,7 +83,7 @@ if (synthetic := False):
         # stopwatch.stop()
         # counts['hedonic_traversal'] += g.in_equibrium(density)
         # durations['hedonic_traversal'] += stopwatch.duration
-        # print('community_hedonic_traversal:', stopwatch.duration, g.in_equibrium(density), ig.compare_communities(p2, gt, method="rand"))
+        # print('community_hedonic_traversal:', stopwatch.duration, g.in_equibrium(density), ig.compare_communities(p2, gt, method="adjusted_rand"))
 
         stopwatch.reset()
         stopwatch.start()
@@ -92,7 +92,7 @@ if (synthetic := False):
         g.initialize_game(p3.membership)
         counts['leiden'] += g.in_equibrium(density)
         durations['leiden'] += stopwatch.duration
-        # print('community_leiden:', stopwatch.duration, g.in_equibrium(density), ig.compare_communities(p3, gt, method="rand"))
+        # print('community_leiden:', stopwatch.duration, g.in_equibrium(density), ig.compare_communities(p3, gt, method="adjusted_rand"))
 
         stopwatch = Stopwatch() # create Stopwatch instance
         stopwatch.start()
@@ -101,7 +101,7 @@ if (synthetic := False):
         stopwatch.stop()
         counts['leiden_hedonic'] += g.in_equibrium(density)
         durations['leiden_hedonic'] += stopwatch.duration
-        # print('community_leiden_hedonic:', stopwatch.duration, g.in_equibrium(density), ig.compare_communities(p4, gt, method="rand"))
+        # print('community_leiden_hedonic:', stopwatch.duration, g.in_equibrium(density), ig.compare_communities(p4, gt, method="adjusted_rand"))
 
         # print('\n'*3)
 

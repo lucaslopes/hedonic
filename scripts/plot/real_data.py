@@ -63,8 +63,8 @@ def get_accuracy(graph: Game, communities, noise=0.):
         res_hedonic = graph.community_hedonic(initial_membership=initial_membership)
         print('running for leiden')
         res_leiden = graph.community_leiden(initial_membership=initial_membership, n_iterations=-1, resolution=graph.density())
-        accuracy_hedonic.append(ig.compare_communities(res_hedonic, comm, method="rand"))
-        accuracy_leiden.append(ig.compare_communities(res_leiden, initial_membership, method="rand"))
+        accuracy_hedonic.append(ig.compare_communities(res_hedonic, comm, method="adjusted_rand"))
+        accuracy_leiden.append(ig.compare_communities(res_leiden, initial_membership, method="adjusted_rand"))
     return accuracy_hedonic, accuracy_leiden
 
 file_path = '/Users/lucas/Databases/Hedonic/Networks/DBLP/com-dblp.ungraph.txt.gz'

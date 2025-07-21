@@ -115,7 +115,7 @@ class Game(Graph):
     # Rand index of Rand (1971)
     partition = VertexClustering(self, partition) if type(partition) == list else partition
     ground_truth = VertexClustering(self, ground_truth) if type(ground_truth) == list else ground_truth
-    return compare_communities(partition, ground_truth, method="rand")
+    return compare_communities(partition, ground_truth, method="adjusted_rand")
     n_communities = len({partition.membership[i] for i in range(partition.n)})
     if n_communities > 0:
       n_correct = 0
