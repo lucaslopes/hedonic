@@ -5,7 +5,7 @@ setup(
   version='0.0.1',
   packages=find_packages(),
   install_requires=[
-    'igraph',
+    # 'igraph @ git+https://github.com/lucaslopes/python-igraph.git@leiden',
     'ipython',
     'tqdm',
     'stopwatch.py',

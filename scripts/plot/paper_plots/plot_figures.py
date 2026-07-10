@@ -138,7 +138,28 @@ def compute_figure1_data(df: pd.DataFrame, cmap: str = "BuPu"):
         "cmap": cmap
     }
 
-def plot_figure1(data: dict, filename: str = "figure1", fig_dir: str = None):
+def set_plot_style(ax, dark_mode: bool):
+    """Set the plot style based on dark_mode parameter."""
+    if dark_mode:
+        ax.set_facecolor('black')
+        ax.grid(True, color='gray', alpha=0.2)
+        ax.tick_params(colors='white')
+        ax.xaxis.label.set_color('white')
+        ax.yaxis.label.set_color('white')
+        ax.title.set_color('white')
+        for spine in ax.spines.values():
+            spine.set_color('white')
+    else:
+        ax.set_facecolor('white')
+        ax.grid(True, color='gray', alpha=0.2)
+        ax.tick_params(colors='black')
+        ax.xaxis.label.set_color('black')
+        ax.yaxis.label.set_color('black')
+        ax.title.set_color('black')
+        for spine in ax.spines.values():
+            spine.set_color('black')
+
+def plot_figure1(data: dict, filename: str = "figure1", fig_dir: str = None, dark_mode: bool = False, file_format: str = "svg"):
     """
     Plot histograms (upper row) and heatmaps (bottom row) for ground truth.
     """
@@ -146,11 +167,13 @@ def plot_figure1(data: dict, filename: str = "figure1", fig_dir: str = None):
     global_max = data["global_max"]
     hist_data = data["hist_data"]
     heatmaps = data["heatmaps"]
-    cmap = "BuPu"  # Alternatively, use data["cmap"]
+    cmap = "Purples"  # "BuPu"  # Alternatively, use data["cmap"]
 
     fig, axs = plt.subplots(2, len(communities), figsize=(16, 5))
+    fig.patch.set_facecolor('black' if dark_mode else 'white')
     
-    hist_color = plt.get_cmap(cmap+'_r')(0)
+    # Use white color for histograms in dark mode, otherwise use the original color
+    hist_color = 'white' if dark_mode else plt.get_cmap(cmap+'_r')(0)
     for i, (nc, subset, counts) in enumerate(hist_data):
         ax = axs[0, i]
         ax.hist(subset, bins=100, range=(0, 1), color=hist_color)
@@ -158,6 +181,7 @@ def plot_figure1(data: dict, filename: str = "figure1", fig_dir: str = None):
         ax.set_xlabel("Fraction of robust nodes")
         ax.set_ylim(0, global_max)
         ax.set_ylabel("Ground Truth Count" if i == 0 else "")
+        set_plot_style(ax, dark_mode)
     
     for i, nc in enumerate(communities):
         ax = axs[1, i]
@@ -169,25 +193,31 @@ def plot_figure1(data: dict, filename: str = "figure1", fig_dir: str = None):
         ax.set_xticklabels([f"{val:.2f}" for val in pivot.columns], rotation=45, fontsize=8)
         ax.set_yticks(np.arange(len(pivot.index)))
         ax.set_yticklabels([f"{val:.2f}" for val in pivot.index], fontsize=8)
+        set_plot_style(ax, dark_mode)
     
     cbar_ax = fig.add_axes([0.92, 0.15, 0.02, 0.7])
-    fig.colorbar(im, cax=cbar_ax, label="Robustness")
+    cbar_ax.set_facecolor('black' if dark_mode else 'white')
+    cbar = fig.colorbar(im, cax=cbar_ax, label="Robustness")
+    if dark_mode:
+        cbar.ax.yaxis.label.set_color('white')
+        cbar.ax.tick_params(colors='white')
+    
     fig.subplots_adjust(right=0.9, hspace=0.3, wspace=0.3)
     fig.tight_layout(rect=[0, 0, 0.9, 1])
-    fig.savefig(os.path.join(fig_dir, f"{filename}.pdf"), dpi=300)
+    fig.savefig(os.path.join(fig_dir, f"{filename}.{file_format}"), dpi=300, facecolor=fig.get_facecolor())
     plt.close(fig)
 
 # =============================================================================
 # Figure 2: Bar Plots with Means & Confidence Intervals
 # =============================================================================
 
-def compute_figure2_data(df: pd.DataFrame):
+def compute_figure2_data(df: pd.DataFrame, ari: bool = True):
     """
     Aggregate means and confidence intervals for each metric (duration, robustness, accuracy)
     per noise level and method.
     """
     noise_levels = sorted(df['noise'].unique())
-    metrics = ['duration', 'robustness', 'accuracy']
+    metrics = ['duration', 'robustness', 'adjusted_rand' if ari else 'accuracy']
     results = {metric: {} for metric in metrics}
     
     for metric in metrics:
@@ -204,13 +234,13 @@ def compute_figure2_data(df: pd.DataFrame):
             results[metric][meth] = rows
 
     return {
-        "methods": METHODS_MAPPING.keys(),
+        "methods":list(METHODS_MAPPING.keys()),
         "noise_levels": noise_levels,
         "metrics": metrics,
         "results": results
     }
 
-def plot_figure2(fig2_data: dict, filename: str = "figure2", fig_dir: str = None):
+def plot_figure2(fig2_data: dict, filename: str = "figure2", fig_dir: str = None, dark_mode: bool = False, ari: bool = True, file_format: str = "svg"):
     """
     Plot bar charts (one subplot per metric) with means and confidence intervals.
     """
@@ -220,12 +250,15 @@ def plot_figure2(fig2_data: dict, filename: str = "figure2", fig_dir: str = None
     results = fig2_data["results"]
     
     fig, axs = plt.subplots(1, len(metrics), figsize=(15, 2))
+    fig.patch.set_facecolor('black' if dark_mode else 'white')
+    
     bar_width = 0.15
     indices = np.arange(len(noise_levels))
     handles, labels = [], []
-    
-    metric_title = {'duration': 'Efficiency', 'robustness': 'Robustness', 'accuracy': 'Accuracy'}
-    metric_names = {'duration': 'Time', 'robustness': 'Robustness', 'accuracy': 'Rand Index'}
+
+    acc_key = 'adjusted_rand' if ari else 'accuracy'
+    metric_title = {'duration': 'Efficiency', 'robustness': 'Robustness', acc_key: 'Accuracy'}
+    metric_names = {'duration': 'Time', 'robustness': 'Robustness', acc_key: 'Adjusted Rand Index' if ari else 'Rand Index'}
     
     for col, metric in enumerate(metrics):
         ax = axs[col]
@@ -244,23 +277,24 @@ def plot_figure2(fig2_data: dict, filename: str = "figure2", fig_dir: str = None
         ax.set_xlabel("Noise")
         ax.set_ylabel(metric_names[metric])
         ax.set_title(metric_title[metric])
+        set_plot_style(ax, dark_mode)
     
     fig.legend(handles, labels, loc='upper center', ncol=len(methods), bbox_to_anchor=(0.5, -0.1))
     fig.subplots_adjust(bottom=0.1)
-    fig.savefig(os.path.join(fig_dir, f"{filename}.pdf"), dpi=300, bbox_inches='tight')
+    fig.savefig(os.path.join(fig_dir, f"{filename}.{file_format}"), dpi=300, bbox_inches='tight', facecolor=fig.get_facecolor())
     plt.close(fig)
 
 # =============================================================================
 # Figure 3: Bar Plots Split by Communities and Noise
 # =============================================================================
 
-def compute_figure3_data(df: pd.DataFrame, precomputed_all=None, precomputed_noisy=None):
+def compute_figure3_data(df: pd.DataFrame, precomputed_all=None, precomputed_noisy=None, ari: bool = True):
     """
     Aggregate data for metrics split by number of communities and noise.
     """
     df_methods_all, df_methods_noisy = precompute_subsets(df, precomputed_all, precomputed_noisy)
     communities = sorted(df_methods_all['number_of_communities'].unique())
-    metrics = ['duration', 'robustness', 'accuracy']
+    metrics = ['duration', 'robustness', 'adjusted_rand' if ari else 'accuracy']
     results = {0: {metric: {} for metric in metrics}, 1: {metric: {} for metric in metrics}}
     
     for noise_val in [0, 1]:
@@ -279,13 +313,13 @@ def compute_figure3_data(df: pd.DataFrame, precomputed_all=None, precomputed_noi
                 results[noise_val][metric][meth] = rows
 
     return {
-        "methods": METHODS_MAPPING.keys(),
+        "methods": list(METHODS_MAPPING.keys()),
         "communities": communities,
         "metrics": metrics,
         "results": results
     }
 
-def plot_figure3(fig3_data: dict, filename: str = "figure3", fig_dir: str = None):
+def plot_figure3(fig3_data: dict, filename: str = "figure3", fig_dir: str = None, dark_mode: bool = False, ari: bool = True, file_format: str = "svg"):
     """
     Plot bar charts for metrics split by communities for noise=0 (upper row) and noise=1 (lower row).
     """
@@ -295,12 +329,15 @@ def plot_figure3(fig3_data: dict, filename: str = "figure3", fig_dir: str = None
     results = fig3_data["results"]
     
     fig, axs = plt.subplots(2, len(metrics), figsize=(15, 4))
+    fig.patch.set_facecolor('black' if dark_mode else 'white')
+    
     bar_width = 0.15
     indices = np.arange(len(communities))
     handles, labels = [], []
     
-    metric_title = {'duration': 'Efficiency', 'robustness': 'Robustness', 'accuracy': 'Accuracy'}
-    metric_names = {'duration': 'Time', 'robustness': 'Robustness', 'accuracy': 'Rand Index'}
+    acc_key = 'adjusted_rand' if ari else 'accuracy'
+    metric_title = {'duration': 'Efficiency', 'robustness': 'Robustness', acc_key: 'Accuracy'}
+    metric_names = {'duration': 'Time', 'robustness': 'Robustness', acc_key: 'Adjusted Rand Index' if ari else 'Rand Index'}
     
     for row, noise_val in enumerate([0, 1]):
         for col, metric in enumerate(metrics):
@@ -322,10 +359,11 @@ def plot_figure3(fig3_data: dict, filename: str = "figure3", fig_dir: str = None
             if row == 1:
                 ax.set_xlabel("Number of Communities")
             ax.set_ylabel(metric_names[metric])
+            set_plot_style(ax, dark_mode)
     
     fig.legend(handles, labels, loc='upper center', ncol=len(methods), bbox_to_anchor=(0.5, -0.1))
     fig.subplots_adjust(bottom=0)
-    fig.savefig(os.path.join(fig_dir, f"{filename}.pdf"), dpi=300, bbox_inches='tight')
+    fig.savefig(os.path.join(fig_dir, f"{filename}.{file_format}"), dpi=300, bbox_inches='tight', facecolor=fig.get_facecolor())
     plt.close(fig)
 
 
@@ -403,26 +441,26 @@ def precompute_fig4_subsets(df: pd.DataFrame):
     df_methods_noisy = df_methods_all[df_methods_all['noise'] == 1]
     return df_methods_all, df_methods_noisy
 
-def compute_figure4a_robustness_data(df: pd.DataFrame, precomputed_all, precomputed_noisy):
+def compute_figure4a_robustness_data(df: pd.DataFrame, precomputed_all, precomputed_noisy, ari=True):
     """Wrapper for computing Figure 4 (Robustness): x-axis is 'robustness'."""
     X, Y, kde_results = compute_figure4_data_common(
-        df, x_col='robustness', y_col='accuracy', 
-        x_range=(-.1,1.1), y_range=(0,1.1),
+        df, x_col='robustness', y_col='adjusted_rand' if ari else 'accuracy', 
+        x_range=(-.1,1.2), y_range=(-1 if ari else 0,1.2),
         precomputed_all=precomputed_all, precomputed_noisy=precomputed_noisy
     )
     return {"X": X, "Y": Y, "kde_results": kde_results}
 
-def compute_figure4b_efficiency_data(df: pd.DataFrame, precomputed_all, precomputed_noisy):
+def compute_figure4b_efficiency_data(df: pd.DataFrame, precomputed_all, precomputed_noisy, ari=True):
     """Wrapper for computing Figure 4 (Efficiency): x-axis is 'duration'."""
     # max_dur = df_methods_all['duration'].max() if not df_methods_all.empty else 1.0
     X, Y, kde_results = compute_figure4_data_common(
-        df, x_col='duration', y_col='accuracy', 
-        x_range=(-0.05, 0.3), y_range=(0,1.1),
+        df, x_col='duration', y_col='adjusted_rand' if ari else 'accuracy', 
+        x_range=(-0.05, 0.3), y_range=(-1 if ari else 0,1.2),
         precomputed_all=precomputed_all, precomputed_noisy=precomputed_noisy
     )
     return {"X": X, "Y": Y, "kde_results": kde_results}
 
-def plot_figure4(fig4_data: dict, xlabel: str, fig_dir: str = None):
+def plot_figure4(fig4_data: dict, xlabel: str, fig_dir: str = None, ari: bool = True, file_format: str = "svg"):
     """
     General plotting routine for Figure 4.
     The upper row plots KDE for all data (clean) and the bottom row for the noisy subset.
@@ -430,8 +468,9 @@ def plot_figure4(fig4_data: dict, xlabel: str, fig_dir: str = None):
     """
     X = fig4_data["X"]
     Y = fig4_data["Y"]
-    kde_results = fig4_data["kde_results"]
+    kde_results = fig4_data["kde_results"]  
     n_methods = len(METHODS_MAPPING)
+    y_label = "Adjusted Rand Index" if ari else "Rand Index"
     
     fig, axs = plt.subplots(2, n_methods, figsize=(15, 6))
     for j, (m_key, m_label) in enumerate(METHODS_MAPPING.items()):
@@ -442,18 +481,76 @@ def plot_figure4(fig4_data: dict, xlabel: str, fig_dir: str = None):
             ax.contourf(X, Y, Z, levels=14, cmap=COLORMAP_DICT[m_key])
         ax.set_title(m_label)
         ax.set_xlabel(xlabel)
-        ax.set_ylabel("Rand Index" if j == 0 else "")
+        ax.set_ylabel(y_label if j == 0 else "")
         # Bottom row: noisy subset
         ax2 = axs[1, j]
         Z = kde_results[m_key]["noisy"]
         if Z is not None and np.any(Z):
             ax2.contourf(X, Y, Z, levels=14, cmap=COLORMAP_DICT[m_key])
         ax2.set_xlabel(xlabel)
-        ax2.set_ylabel("Rand Index" if j == 0 else "")
+        ax2.set_ylabel(y_label if j == 0 else "")
     
     fig.tight_layout()
-    fname = "acc_robustness.pdf" if xlabel == "Robustness" else "acc_efficiency.pdf"
+    fname = f"acc_robustness.{file_format}" if xlabel == "Robustness" else f"acc_efficiency.{file_format}"
     fig.savefig(os.path.join(fig_dir, fname), dpi=300)
+    plt.close(fig)
+
+def compute_figure4_combined_data(df: pd.DataFrame, precomputed_all, precomputed_noisy, ari=True):
+    """Compute combined data for Figure 4 showing only noisy subset plots for both robustness and efficiency."""
+    # Compute robustness data
+    X_rob, Y_rob, kde_results_rob = compute_figure4_data_common(
+        df, x_col='robustness', y_col='adjusted_rand' if ari else 'accuracy', 
+        x_range=(-.1,1.1), y_range=(0,1.1),
+        precomputed_all=precomputed_all, precomputed_noisy=precomputed_noisy
+    )
+    
+    # Compute efficiency data
+    X_eff, Y_eff, kde_results_eff = compute_figure4_data_common(
+        df, x_col='duration', y_col='adjusted_rand' if ari else 'accuracy', 
+        x_range=(-0.05, 0.3), y_range=(0,1.1),
+        precomputed_all=precomputed_all, precomputed_noisy=precomputed_noisy
+    )
+    
+    return {
+        "robustness": {"X": X_rob, "Y": Y_rob, "kde_results": kde_results_rob},
+        "efficiency": {"X": X_eff, "Y": Y_eff, "kde_results": kde_results_eff}
+    }
+
+def plot_figure4_combined(fig4_data: dict, fig_dir: str = None, dark_mode: bool = False, file_format: str = "svg"):
+    """
+    Plot combined Figure 4 showing only noisy subset plots for both robustness and efficiency.
+    """
+    n_methods = len(METHODS_MAPPING)
+    fig, axs = plt.subplots(2, n_methods, figsize=(15, 6))
+    fig.patch.set_facecolor('black' if dark_mode else 'white')
+    
+    # Plot robustness data (top row)
+    for j, (m_key, m_label) in enumerate(METHODS_MAPPING.items()):
+        ax = axs[0, j]
+        Z = fig4_data["robustness"]["kde_results"][m_key]["noisy"]
+        X = fig4_data["robustness"]["X"]
+        Y = fig4_data["robustness"]["Y"]
+        if Z is not None and np.any(Z):
+            ax.contourf(X, Y, Z, levels=14, cmap=COLORMAP_DICT[m_key])
+        ax.set_title(m_label)
+        ax.set_xlabel("Robustness")
+        ax.set_ylabel("Rand Index" if j == 0 else "")
+        set_plot_style(ax, dark_mode)
+    
+    # Plot efficiency data (bottom row)
+    for j, (m_key, m_label) in enumerate(METHODS_MAPPING.items()):
+        ax = axs[1, j]
+        Z = fig4_data["efficiency"]["kde_results"][m_key]["noisy"]
+        X = fig4_data["efficiency"]["X"]
+        Y = fig4_data["efficiency"]["Y"]
+        if Z is not None and np.any(Z):
+            ax.contourf(X, Y, Z, levels=14, cmap=COLORMAP_DICT[m_key])
+        ax.set_xlabel("Time")
+        ax.set_ylabel("Rand Index" if j == 0 else "")
+        set_plot_style(ax, dark_mode)
+    
+    fig.tight_layout()
+    fig.savefig(os.path.join(fig_dir, f"figure4_combined.{file_format}"), dpi=300, facecolor=fig.get_facecolor())
     plt.close(fig)
 
 # =============================================================================
@@ -463,11 +560,16 @@ def plot_figure4(fig4_data: dict, xlabel: str, fig_dir: str = None):
 def main():
     parser = argparse.ArgumentParser(description='Generate persistent figures from a dataset.')
     parser.add_argument('path', type=str, nargs='?',
-                        default='/Users/lucas/Databases/Hedonic/PHYSA/Synthetic_Networks/V1020/resultados.csv.gzip',
+                        default='/Users/lucas/Databases/Hedonic/PHYSA/Synthetic_Networks/V1020/resultados_ari.csv.gzip',
                         help='Path to the parquet or CSV.GZ dataset.')
+    parser.add_argument('--dark-mode', action='store_true',
+                        help='Use dark mode for plots (black background, white text)')
+    parser.add_argument('--format', type=str, default='pdf', choices=['svg', 'pdf'],
+                        help='Output file format for figures (svg or pdf)')
     args = parser.parse_args()
     data_path = args.path
-    fig_dir = os.path.join(os.path.dirname(data_path), 'figures')
+    dark_mode = True  # args.dark_mode
+    fig_dir = '/Users/lucas/Desktop/ARI/'
     os.makedirs(fig_dir, exist_ok=True)
 
     PERSIST_DIR = os.path.join(os.path.dirname(data_path), 'persist')
@@ -481,10 +583,10 @@ def main():
     print("Plotting figure 1...")
     fig1_file = os.path.join(PERSIST_DIR, "fig1_data.pkl")
     fig1_data = load_or_compute(fig1_file, compute_figure1_data, df)
-    plot_figure1(fig1_data, "gt_robustness", fig_dir)
+    plot_figure1(fig1_data, "gt_robustness", fig_dir, dark_mode=dark_mode, file_format=args.format)
     del fig1_data
     gc.collect()
-    print("Done: figure1.pdf")
+    print(f"Done: figure1.{args.format}")
     
     # Precompute subsets for Figures 2-4
     df_methods_all, df_methods_noisy = precompute_fig4_subsets(include_spectral(df))
@@ -495,19 +597,19 @@ def main():
     print("Plotting figure 2...")
     fig2_file = os.path.join(PERSIST_DIR, "fig2_data.pkl")
     fig2_data = load_or_compute(fig2_file, compute_figure2_data, df_methods_all)
-    plot_figure2(fig2_data, "noise", fig_dir)
+    plot_figure2(fig2_data, "noise", fig_dir, file_format=args.format)
     del fig2_data
     gc.collect()
-    print("Done: figure2.pdf")
+    print(f"Done: figure2.{args.format}")
     
     # Figure 3
     print("Plotting figure 3...")
     fig3_file = os.path.join(PERSIST_DIR, "fig3_data.pkl")
     fig3_data = load_or_compute(fig3_file, compute_figure3_data, df=None, precomputed_all=df_methods_all, precomputed_noisy=df_methods_noisy)
-    plot_figure3(fig3_data, "n_communities", fig_dir)
+    plot_figure3(fig3_data, "n_communities", fig_dir, file_format=args.format)
     del fig3_data
     gc.collect()
-    print("Done: figure3.pdf")
+    print(f"Done: figure3.{args.format}")
    
     # Figure 4a (Robustness)
     print("Plotting figure 4a...")
@@ -516,10 +618,10 @@ def main():
         fig4a_rob_file, compute_figure4a_robustness_data, 
         df=None, precomputed_all=df_methods_all, precomputed_noisy=df_methods_noisy
     )
-    plot_figure4(fig4a_rob_data, xlabel="Robustness", fig_dir=fig_dir)
+    plot_figure4(fig4a_rob_data, xlabel="Robustness", fig_dir=fig_dir, file_format=args.format)
     del fig4a_rob_data
     gc.collect()
-    print("Done: figure4a_robustness.pdf")
+    print(f"Done: figure4a_robustness.{args.format}")
 
     # Figure 4b (Efficiency)
     print("Plotting figure 4b...")
@@ -528,10 +630,22 @@ def main():
         fig4b_eff_file, compute_figure4b_efficiency_data, 
         df=None, precomputed_all=df_methods_all, precomputed_noisy=df_methods_noisy
     )
-    plot_figure4(fig4b_eff_data, xlabel="Time", fig_dir=fig_dir)
+    plot_figure4(fig4b_eff_data, xlabel="Time", fig_dir=fig_dir, file_format=args.format)
     del fig4b_eff_data
     gc.collect()
-    print("Done: figure4b_efficiency.pdf")
+    print(f"Done: figure4b_efficiency.{args.format}")
+    
+    # Combined Figure 4 (Robustness and Efficiency)
+    # print("Plotting combined figure 4...")
+    # fig4_combined_file = os.path.join(PERSIST_DIR, "fig4_combined_data.pkl")
+    # fig4_combined_data = load_or_compute(
+    #     fig4_combined_file, compute_figure4_combined_data, 
+    #     df=None, precomputed_all=df_methods_all, precomputed_noisy=df_methods_noisy
+    # )
+    # plot_figure4_combined(fig4_combined_data, fig_dir=fig_dir, dark_mode=dark_mode, file_format=args.format)
+    # del fig4_combined_data
+    # gc.collect()
+    # print(f"Done: figure4_combined.{args.format}")
     
     print("All figures generated successfully.")
 

@@ -270,7 +270,7 @@ def main():
     """
     Main function to load the experiment data and save it to a CSV file.
     """
-    results_folder = "/Users/lucas/Databases/Hedonic/PHYSA/Synthetic_Networks/V1020/resultados/"
+    results_folder = "/Users/lucas/Databases/Hedonic/PHYSA/Synthetic_Networks/V1020/resultados_ari/"
     print("Loading experiment data from", results_folder)
     df = load_experiment_data(results_folder)
     output_path = results_folder[:-1] + '.csv.gzip'

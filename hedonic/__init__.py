@@ -86,7 +86,7 @@ class Game(Graph):
         highest_hedonic_value = hedonic
     return pref_community
   
-  def in_equibrium(self, resolution):
+  def in_equilibrium(self, resolution):
     for node in self.vs:
       pref_comm = self.get_preferable_community(node, resolution)
       if pref_comm != node['community']:
