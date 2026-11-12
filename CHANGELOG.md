@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+- `hedonic.metrics.overlapping_normalized_mutual_information_lfk`: a pair of
+  communities now counts only when h(p11) + h(p00) > h(p01) + h(p10) with
+  h(p) = -p log2 p, as in Lancichinetti, Fortunato & Kertesz (2009, Appendix
+  B) and McDaid's `onmi` reference. The test used binary entropies, which let
+  small, barely overlapping pairs pass whenever the universe is large, so
+  ONMI values were inflated (for example 0.147 instead of 0 for two
+  10-vertex communities sharing 3 vertices among 1,000). ONMI values change;
+  F1, Omega and the other scores do not. `tests/test_metrics_onmi.py` checks
+  the function against a dense transcription of the definition.
+
 ## 2.0.0
 
 - `hedonic` computes communities with its own purpose-built C core

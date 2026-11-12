@@ -512,6 +512,13 @@ def _binary_entropy(probability: float) -> float:
     )
 
 
+def _entropy_term(probability: float) -> float:
+    """Return h(p) = -p log2 p in bits (0 for p <= 0): one term of an entropy, not a binary entropy."""
+    if probability <= 0.0:
+        return 0.0
+    return float(-probability * math.log2(probability))
+
+
 def _categorical_entropy(probabilities: Sequence[float]) -> float:
     """Return Shannon entropy in bits for a finite probability vector."""
     return float(
@@ -531,6 +538,13 @@ def _pair_conditional_entropy(
     implementation (Lancichinetti--Fortunato--Kertész).  The branch selecting
     the smaller conditional direction is part of the reference implementation
     and avoids a directional bias for communities with very different sizes.
+
+    The pair counts only when h(p11) + h(p00) > h(p01) + h(p10), with
+    h(p) = -p log2 p (LFK 2009, Appendix B, Eq. B.14; McDaid's ``onmi``
+    reference implementation applies the same test).  The test compares
+    single entropy terms, not binary entropies: with binary entropies, a
+    small pair that barely overlaps passes it whenever the universe is large,
+    and earns credit the LFK measure does not give.
     """
     if universe_size <= 0:
         return 0.0
@@ -541,7 +555,7 @@ def _pair_conditional_entropy(
     d = intersection_size / n
     # Rounding at the integer boundary can otherwise produce log2(-0.0).
     a, b, c, d = (max(0.0, min(1.0, value)) for value in (a, b, c, d))
-    if _binary_entropy(a) + _binary_entropy(d) > _binary_entropy(b) + _binary_entropy(c):
+    if _entropy_term(a) + _entropy_term(d) > _entropy_term(b) + _entropy_term(c):
         joint = _categorical_entropy((a, b, c, d))
         return max(0.0, joint - _binary_entropy(target_size / n))
     return _binary_entropy(source_size / n)
