@@ -1,0 +1,320 @@
+name: Rust core
+
+# The core (native/rust/): its own tests, then hedonic built from this checkout
+# (maturin compiles the crate into hedonic._core) through its pinned tests, the
+# libm check and its whole test suite, on every platform the wheels cover.
+# Nothing is published.
+on:
+  push:
+    branches: [main, 'release/**', 'rust/**']
+  pull_request:
+    paths: ['native/**', 'pyproject.toml', '.github/workflows/rust.yml']
+  # Nightly: the fuzz targets, Miri and python-igraph's main branch.
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rust-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust_core:
+    name: Rust core (${{ matrix.name }})
+    if: github.event_name != 'schedule'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x86_64
+            os: ubuntu-24.04
+          - name: linux-aarch64
+            os: ubuntu-24.04-arm
+          # Also x86_64, cross-compiled and run under Rosetta 2.
+          - name: macos
+            os: macos-latest
+          - name: windows-amd64
+            os: windows-2022
+          - name: windows-arm64
+            os: windows-11-arm
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - uses: dtolnay/rust-toolchain@stable
+      # The bit pins, the soft fma against the instruction, and the
+      # same with the soft fma everywhere; the debug build checks every
+      # debug assertion the unchecked paths state.
+      - name: Cargo tests (release, soft fma, debug)
+        working-directory: native/rust
+        run: |
+          cargo test --release --locked
+          cargo test --release --locked --features force-soft-fma
+          cargo test --locked
+      - name: Cargo tests on x86_64 under Rosetta 2
+        if: runner.os == 'macOS'
+        working-directory: native/rust
+        run: |
+          rustup target add x86_64-apple-darwin
+          cargo test --release --locked --target x86_64-apple-darwin
+          cargo test --release --locked --target x86_64-apple-darwin --features force-soft-fma
+      - name: Build and install hedonic
+        run: |
+          python -m pip install -U pip
+          python -m pip install . pytest numpy
+      - name: The pinned Python tests
+        run: python tools/native_tests.py
+      # Concurrent calls equal serial ones; the GIL is free during a call;
+      # every fallback from igraph's capsule gives the same results.
+      - name: Threads and igraph's edges
+        run: python -m pytest -q tests/test_native_threads.py tests/test_graph_edges.py
+      # The argument of native/check_libm.py: no libm call, so no C library's
+      # rounding, in the compiled extension.
+      - name: No libm call in the core
+        if: runner.os != 'Windows'
+        run: python native/check_libm.py "$(cd "$RUNNER_TEMP" && python -c 'import hedonic._core as m; print(m.__file__)')"
+
+  # hedonic as it ships, with the cli extra: its pinned tests and its whole
+  # test suite.
+  hedonic:
+    name: hedonic and its test suite (${{ matrix.name }})
+    if: github.event_name != 'schedule'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x86_64
+            os: ubuntu-24.04
+          - name: linux-aarch64
+            os: ubuntu-24.04-arm
+          - name: macos
+            os: macos-latest
+          - name: windows-amd64
+            os: windows-2022
+          - name: windows-arm64
+            os: windows-11-arm
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build and install hedonic (the cli extra, with its platform markers)
+        run: |
+          python -m pip install -U pip
+          python -m pip install ".[cli]" pytest
+          cd "$RUNNER_TEMP"
+          python -c "import hedonic._core as c; assert c.backend == 'rust' and 'site-packages' in c.__file__, c.__file__; print(c.__file__, c.fma_path())"
+      - name: Pinned tests (no skips)
+        run: python tools/native_tests.py
+      - name: The whole test suite
+        env:
+          HIG_PINNED: "1"
+        run: python -m pytest -q -p no:cacheprovider
+
+  # Clippy on every feature set (lints the port allows on purpose are listed
+  # in src/lib.rs), the fuzz crate included.
+  lints:
+    name: Clippy
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - name: Clippy, -D warnings
+        working-directory: native/rust
+        run: |
+          cargo clippy --locked --all-targets -- -D warnings
+          cargo clippy --locked --all-targets --features python -- -D warnings
+          cargo clippy --locked --all-targets --features core-module -- -D warnings
+          cargo clippy --locked --all-targets --features force-soft-fma -- -D warnings
+          cd fuzz && cargo clippy --locked --all-targets -- -D warnings
+
+  # The minimum supported Rust version (Cargo.toml's rust-version): PyO3 0.29
+  # needs 1.83. The tests and the extension build with exactly it.
+  msrv:
+    name: Rust 1.83 (MSRV)
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - uses: dtolnay/rust-toolchain@1.83
+      - name: Tests and the extension at the MSRV
+        working-directory: native/rust
+        run: |
+          grep -qx 'rust-version = "1.83"' Cargo.toml
+          cargo test --release --locked
+          cargo build --release --locked --features python
+
+  # Advisories, licences, duplicate versions and sources (deny.toml), and the
+  # crate's licence equal to the package's.
+  supply_chain:
+    name: cargo-deny and licences
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          manifest-path: native/rust/Cargo.toml
+          command: check
+          arguments: --all-features
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: One licence for the crate, its pyproject and hedonic
+        run: |
+          python - <<'PY'
+          import tomllib
+          crate = tomllib.load(open("native/rust/Cargo.toml", "rb"))["package"]["license"]
+          fuzz = tomllib.load(open("native/rust/fuzz/Cargo.toml", "rb"))["package"]["license"]
+          package = tomllib.load(open("pyproject.toml", "rb"))["project"]["license"]
+          assert crate == fuzz == package, (crate, fuzz, package)
+          print("licence:", crate)
+          PY
+
+  # The fma on x86_64: the dispatch (std_detect: CPUID's FMA bit with the
+  # OS's AVX state, C's hig_cpu_has_fma) picks the instruction on a CPU that
+  # has it, whatever the target CPU, and the soft fma on one without (QEMU's
+  # Nehalem), with the same pins; and the soft fma everywhere.
+  x86_64_dispatch:
+    name: x86_64 fma dispatch
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Baseline x86-64 (runtime dispatch to the instruction)
+        working-directory: native/rust
+        env:
+          RUSTFLAGS: -C target-cpu=x86-64
+          HIG_EXPECT_FMA: instruction
+        run: cargo test --release --locked
+      - name: Haswell (FMA in the target)
+        working-directory: native/rust
+        env:
+          RUSTFLAGS: -C target-cpu=haswell
+          HIG_EXPECT_FMA: instruction
+        run: cargo test --release --locked
+      - name: The soft fma everywhere
+        working-directory: native/rust
+        env:
+          HIG_EXPECT_FMA: soft
+        run: cargo test --release --locked --features force-soft-fma
+      - name: A CPU without FMA (QEMU, Nehalem) dispatches to the soft fma
+        working-directory: native/rust
+        env:
+          RUSTFLAGS: -C target-cpu=x86-64
+          HIG_EXPECT_FMA: soft
+        run: |
+          sudo apt-get update && sudo apt-get install -y qemu-user
+          cargo test --release --locked --no-run --message-format=json \
+            | python3 -c "import json, sys; [print(m['executable']) for m in map(json.loads, sys.stdin) if m.get('profile', {}).get('test') and m.get('executable')]" \
+            > tests.txt
+          while read -r exe; do echo "== $exe"; qemu-x86_64 -cpu Nehalem "$exe"; done < tests.txt
+
+  # Miri on the engines' unchecked indexing (no python feature, small games).
+  # One job per test target: together they took the 90 minutes of one job
+  # (tests/audit.rs and tests/core.rs about 45 each).
+  miri:
+    name: Miri (${{ matrix.target }})
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ["--lib", "--doc", "--test audit", "--test core", "--test pins"]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: miri, rust-src
+      - name: cargo miri test
+        working-directory: native/rust
+        env:
+          HIG_RANDOM_CASES: "12"
+          HIG_AUDIT_FUZZ: "12"
+          MIRIFLAGS: -Zmiri-env-forward=HIG_RANDOM_CASES -Zmiri-env-forward=HIG_AUDIT_FUZZ
+        run: cargo miri test --locked ${{ matrix.target }}
+
+  # The fuzz targets: their checks on pseudo-random inputs on every push, and
+  # libFuzzer (cargo-fuzz, nightly, AddressSanitizer) for 60 s each nightly.
+  fuzz:
+    name: Fuzzing
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - name: The targets' checks on 200 000 pseudo-random inputs each (stable)
+        working-directory: native/rust/fuzz
+        env:
+          HIG_FUZZ_CASES: "200000"
+        run: cargo test --release --locked
+      - uses: dtolnay/rust-toolchain@nightly
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+      - name: libFuzzer, 60 s per target
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        working-directory: native/rust/fuzz
+        run: |
+          cargo install cargo-fuzz --locked
+          for target in inputs runs; do
+            cargo +nightly fuzz run "$target" -- -max_total_time=60 -max_len=1024
+          done
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: fuzz-artifacts
+          path: native/rust/fuzz/artifacts
+
+  # The capsule read of igraph's edges against python-igraph's newest release
+  # (blocking) and its main branch (nightly, not blocking): the edges must still
+  # be borrowed, and every result the same.
+  igraph_versions:
+    name: python-igraph ${{ matrix.igraph }}
+    runs-on: ubuntu-24.04
+    continue-on-error: ${{ matrix.igraph == 'main' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        igraph: [release, main]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install hedonic and python-igraph ${{ matrix.igraph }}
+        run: |
+          python -m pip install -U pip
+          python -m pip install . pytest numpy
+          if [ "${{ matrix.igraph }}" = main ]; then
+            sudo apt-get update && sudo apt-get install -y cmake flex bison
+            python -m pip install --force-reinstall --no-deps "igraph @ git+https://github.com/igraph/python-igraph.git@main"
+          else
+            python -m pip install -U --force-reinstall --no-deps igraph
+          fi
+          python -c "import igraph; print('python-igraph', igraph.__version__)"
+      - name: The edges are borrowed from the capsule
+        run: |
+          python -c "import igraph; from hedonic import _core; assert _core._edges_borrowed(igraph.Graph.Famous('Zachary')), 'fell back to get_edgelist()'"
+      - name: The same results through the capsule and its fallbacks
+        run: |
+          python -m pytest -q tests/test_graph_edges.py
+          python tools/native_tests.py

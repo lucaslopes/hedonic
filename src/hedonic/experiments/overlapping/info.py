@@ -90,7 +90,7 @@ def method_status(tools: Path) -> list[dict]:
     for m in qs.METHODS:
         missing = [t for t in REQUIREMENTS[m.key] if not _tool(t)]
         if m.key == "hedonic":
-            status, detail = "ready", "built in (the hedonic C core)"
+            status, detail = "ready", "built in (the hedonic native core)"
         elif m.key == "clique_percolation":
             status, detail = ("ready", "NetworkX clique percolation") if not missing else ("missing", "pip install networkx")
         elif m.key == "codeseg":

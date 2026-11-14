@@ -742,7 +742,7 @@ METHODS: dict[str, MethodAdapter] = {
     "hedonic_local": MethodAdapter(
         name="hedonic_local",
         family="hedonic local-moving",
-        implementation="hedonic.Game.community_hedonic (hedonic C core)",
+        implementation="hedonic.Game.community_hedonic (hedonic native core)",
         parameters={
             "allow_isolation": True,
             "rng": "community_hedonic(seed=seed)",
