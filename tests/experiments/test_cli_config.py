@@ -185,8 +185,8 @@ class TestExperimentsConfig(unittest.TestCase):
         from hedonic.experiments.resources import shipped_configs
 
         configs = shipped_configs()
-        self.assertTrue({"queue-paper.toml", "paper-benchmark.toml", "overlap-heatmap.toml",
-                         "start-quality-hoc-local.toml", "baseline-calibration-paper.toml",
+        self.assertTrue({"queue-overlap.toml", "paper-benchmark.toml", "overlap-heatmap.toml",
+                         "start-quality-hedonic.toml", "baseline-calibration-paper.toml",
                          "overlapping-gt-spectrum-full.toml", "hedonic-run.example.toml"} <= {p.name for p in configs})
         for path in configs:
             text = path.read_text()

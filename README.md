@@ -1,10 +1,19 @@
-# Hedonic
+# Hedonic Games for Community Detection
+
+[![Rust core CI](https://github.com/lucaslopes/hedonic/actions/workflows/rust.yml/badge.svg?branch=main)](https://github.com/lucaslopes/hedonic/actions/workflows/rust.yml)
+[![Wheels](https://github.com/lucaslopes/hedonic/actions/workflows/wheels.yml/badge.svg?branch=main)](https://github.com/lucaslopes/hedonic/actions/workflows/wheels.yml)
+[![GitHub Pages](https://github.com/lucaslopes/hedonic/actions/workflows/pages.yml/badge.svg?branch=main)](https://github.com/lucaslopes/hedonic/actions/workflows/pages.yml)
+[![PyPI version](https://img.shields.io/pypi/v/hedonic.svg)](https://pypi.org/project/hedonic/)
+[![Python versions](https://img.shields.io/pypi/pyversions/hedonic.svg)](https://pypi.org/project/hedonic/)
+[![License](https://img.shields.io/pypi/l/hedonic.svg)](https://github.com/lucaslopes/hedonic/blob/main/LICENSE)
 
 `hedonic` detects communities in [`igraph`](https://igraph.org/) graphs as a
 hedonic game: wrap a graph in `Game` and call `community_hedonic()`. One
 method returns either a **disjoint** partition or an **overlapping** cover.
 
-The detector is a small C core compiled into the package (`hedonic._core`).
+The detector is a small Rust core compiled into the package (`hedonic._core`);
+hedonic 2.0 shipped the same core in C, and both compute the same results, bit
+for bit.
 The only dependencies are the standard [`igraph`](https://pypi.org/project/igraph/)
 package and NumPy, so `hedonic` installs next to any igraph 1.x you already
 use. Python 3.12 or newer.
@@ -98,13 +107,13 @@ uv add hedonic
 ```
 
 Wheels are built for Linux (x86_64, aarch64), macOS (x86_64, arm64) and
-Windows (AMD64, ARM64). Elsewhere pip builds the C core from the source
-distribution, which needs a C11 compiler.
+Windows (AMD64, ARM64). Elsewhere pip builds the core from the source
+distribution, which needs a Rust toolchain ([rustup](https://rustup.rs/)).
 
 The package also installs the experiment command line (`hedonic` and
 `hedonic-exp`, see [Command line](#command-line-reproducing-the-experiments))
 and its dependencies (SciPy, pandas, Matplotlib, NetworkX, PyArrow, DuckDB and
-tqdm). The experiments' robustness audits run on the same C audit as
+tqdm). The experiments' robustness audits run on the same audit as
 `Game.stable_intervals` and `Game.regrets`, so they need nothing more. The
 command line runs on macOS and Linux; on Windows the package installs the
 library alone.
@@ -345,10 +354,12 @@ calibrated resolution from the Hedonic calibration:
 ```bash
 hedonic setup --all --dry-run    # the pairs, the eight baselines and the system tools they need
 hedonic setup --all              # download the pairs; build and install the baselines
-hedonic run queue paper --dry-run
-hedonic run queue paper          # detached and resumable; days on a laptop
-hedonic run attach paper-queue   # live view (q or Ctrl-C closes the view, never the run)
-hedonic run queue paper --report # what is done, run by run and pair by pair
+hedonic run queue overlap --dry-run
+hedonic run queue overlap          # detached and resumable; days on a laptop
+hedonic run attach overlap-queue   # live view (q or Ctrl-C closes the view, never the run)
+hedonic run queue overlap --report # what is done, run by run and pair by pair
+hedonic run queue disjoint         # the disjoint paper's queue (the SBM smoke check, then the 100-seed grid)
+hedonic run queue all              # both: the overlap queue, then the disjoint one
 ```
 
 `hedonic setup` needs git, a C and C++ compiler, CMake and make, a C++
@@ -356,7 +367,17 @@ compiler with OpenMP for FOX (Homebrew `g++` on macOS) and
 [`uv`](https://docs.astral.sh/uv/) for the locked CDlib environment of ANGEL
 and Ego-Splitting; `--dry-run` says which are missing. Starting the queue
 again continues it: every run decides from its files what is already done.
-The queue writes under `--root DIR` (default `~/Databases/Hedonic/Overlap/paper-queue`).
+The queue writes under `--root DIR` (default `~/Databases/Hedonic/Overlap/overlap-queue`).
+A queue item can itself be a queue (`run = ["queue", "overlap"]`, optionally
+with `"--root", DIR`): it is started, waited for and judged from its files, so
+a queue file of your own can chain both papers, or anything else, in the
+order you want (`queue-all.toml` is the shipped example).
+A `[limits]` table in a queue file (or `limits = { ... }` on one item, or
+`--timeout`/`--max-eta`) sets `timeout = "2h"`, which stops a single run still
+going after two hours, and `max_eta = "6h"`, which skips a pair whose single run
+is estimated longer. Both apply to one detector run, calibration probe or
+condition, never to a total, and a run stopped by a limit runs again under a
+larger one.
 
 The benchmark runs a deterministic method (CoDeSEG at one thread, CliquePerc,
 FOX, BigCLAM, NcGame, NEO-K-Means) once per pair, at the lowest seed of the
@@ -415,7 +436,7 @@ and label gaps are renumbered in numeric order. Every vertex needs a label;
 complete uncovered vertices explicitly with private labels. The cap defaults
 to the largest row and cannot be smaller.
 
-The C audit finds closed stable intervals over resolution [0, 1] using the
+The audit finds closed stable intervals over resolution [0, 1] using the
 paper's tolerance `1e-10 + 1e-9 * max(1, abs(current_utility))`. This differs
 from the detector's rigorous equilibrium certificate. Audits support unit
 node weights only, finite non-negative edge weights, and undirected graphs
@@ -424,29 +445,113 @@ pass `edge_weights="weight"` to audit with an edge attribute. The native impleme
 supports on demand, avoiding a global vertex-by-label support table.
 See [the core arithmetic contract](native/README.md#fixed-cover-stability-audit).
 
+## Without igraph
+
+The core never reads an igraph graph: it takes a vertex count, an edge list
+and weights. `hedonic.arrays` calls it on NumPy arrays, imports nothing but
+NumPy and never loads igraph (importing `hedonic` no longer loads it either;
+`hedonic.Game` does, on first use).
+
+```python
+import numpy as np
+from hedonic import arrays
+
+edges = np.array([(0, 1), (1, 2), (2, 0), (2, 3), (3, 4), (4, 5), (5, 3)])
+partition = arrays.detect(6, edges, seed=0)
+partition.membership            # array([0, 0, 0, 1, 1, 1])
+partition.quality, partition.equilibrium_slack, partition.provenance
+
+cover = arrays.detect(6, edges, max_memberships=2, resolution=0.2, seed=0,
+                      initial_membership=partition)   # a result is a start
+cover.offsets, cover.labels     # vertex v is in labels[offsets[v]:offsets[v + 1]]
+cover.rows(), cover.communities()
+
+intervals = arrays.stable_intervals(6, edges, cover)
+regret, tolerance = arrays.regrets(6, edges, [0.1, 0.5], cover)
+```
+
+`detect` takes the options of `Game.community_hedonic`, with the same
+defaults and checks; weights are arrays (one per edge or vertex), not
+attribute names. `edges` is an `(m, 2)` integer array or a symmetric CSR
+adjacency `(indptr, indices[, data])` (its entries with `i <= j`, in
+row-major order, are the edges and `data` their weights). Parallel edges add
+up; self-loops are refused. For the same edges in the same order, weights,
+options and seed, `arrays.detect(n, edges, ...)` returns the bits of
+`Game(ig.Graph(n, edges)).community_hedonic(...)`: membership or rows,
+quality, slack and provenance (the tests compare them on hundreds of random
+cases, on both cores). The binding reads the edge arrays in place, without
+building a Python object per edge.
+
+Adapters, imported only when called, give an `ArrayGraph` (`n`, `edges`,
+weights and the original `nodes`, vertex `i` being `nodes[i]`):
+
+```python
+graph = arrays.from_networkx(G, weight="weight")  # nodes in G.nodes order, edges in G.edges order
+graph = arrays.from_scipy(A)                      # a symmetric sparse adjacency; values are weights
+result = graph.detect(max_memberships=3, seed=0)
+```
+
+igraph stays a dependency of `pip install hedonic` in 2.1 (`Game` is an
+`igraph.Graph`); making it optional is for 3.0. The core itself is also a
+Rust crate without Python: see [native/rust/README.md](native/rust/README.md#the-rust-api).
+
 ## Development
 
 ```bash
 git clone https://github.com/lucaslopes/hedonic.git
 cd hedonic
-python -m pip install -e ".[cli]" pytest
+python -m pip install -e ".[cli]" pytest   # needs a Rust toolchain: maturin builds the core
 python -m pytest
-make -C native test            # the C core's own tests (sanitizers)
-python tools/native_tests.py   # bit-level pins, as the wheel builds run them
+(cd native/rust && cargo test --release)   # the core's own tests and bit pins
+python tools/native_tests.py               # bit-level pins, as the wheel builds run them
 ```
 
-The C core lives in `native/` (`include/hedonic_core.h` is its API,
-[`native/README.md`](https://github.com/lucaslopes/hedonic/blob/main/native/README.md) its design) and is compiled by
-`setup.py` into `hedonic._core`. Rounding is fixed by the source (explicit
-fused multiply-adds, computed by the instruction or the core's own correctly
-rounded soft fma, never the C library's; no contraction), so results are
-identical across platforms; the wheel workflow
-(`.github/workflows/wheels.yml`) checks this on every platform it builds for.
+The core lives in `native/rust/`, a Rust crate
+([`native/README.md`](https://github.com/lucaslopes/hedonic/blob/main/native/README.md) is its design,
+[`native/rust/README.md`](https://github.com/lucaslopes/hedonic/blob/main/native/rust/README.md) the crate), and
+[maturin](https://www.maturin.rs) compiles it into `hedonic._core`. Rounding is fixed by the source (explicit fused
+multiply-adds, computed by the instruction or the core's own correctly rounded soft fma, never the C library's; no
+contraction), so results are identical across platforms; the workflows check this on every platform the wheels are
+built for.
+
+### Comparing hedonic 2.0 (C) and 2.1 (Rust)
+
+hedonic 2.1 replaces 2.0's C core with a Rust port and changes nothing else in what it computes: the same calls
+return the same memberships, quality bits and `equilibrium_slack`, and the bit pins of both releases are the same.
+To see it, install each release in its own environment and run the same calls:
+
+```bash
+python -m venv c20 && c20/bin/pip install "hedonic==2.0.*"
+python -m venv rs21 && rs21/bin/pip install "hedonic==2.1.*"
+for env in c20 rs21; do
+  $env/bin/python -c "
+import igraph as ig, hedonic
+from hedonic import _core
+p = hedonic.Game(ig.Graph.Famous('Zachary')).community_hedonic(seed=0, max_memberships=2)
+print(hedonic.__version__, getattr(_core, 'backend', 'c'), p._hedonic_native_quality.hex(), p.membership)"
+done
+```
+
+Runs record which core they used (`_hedonic_provenance["versions"]["hedonic_core"]`, and the experiments' records
+the digest of its sources). A second build of the core can also be installed beside `hedonic._core` as
+`hedonic._core_<name>`: `HEDONIC_CORE=<name>` then makes the package use it in place of `hedonic._core`, so the
+same program and test suite run on either.
+
+## Citation
+
+If you use Hedonic in research, please cite the associated article:
+
+Lucas Lopes Felipe, Konstantin Avrachenkov, and Daniel Sadoc Menasché, “From Leiden to Pleasure Island:
+The Constant Potts Model for community detection as a hedonic game,” *Physica A: Statistical Mechanics and
+its Applications*, 680, 130989 (2025). [doi:10.1016/j.physa.2025.130989](https://doi.org/10.1016/j.physa.2025.130989)
+
+The repository also includes [`CITATION.cff`](https://github.com/lucaslopes/hedonic/blob/main/CITATION.cff) for
+citation managers and GitHub's “Cite this repository” action.
 
 ## License
 
 This project is distributed under the GNU General Public License, version 3 or
-later. See [LICENSE](https://github.com/lucaslopes/hedonic/blob/main/LICENSE). The C core was written for this package and
-contains no code from igraph or other libraries; the binding implements the
-MT19937 generator step (Matsumoto and Nishimura) as CPython's `random` module
-does, so that seeded runs draw exactly what `random.Random` would.
+later. See [LICENSE](https://github.com/lucaslopes/hedonic/blob/main/LICENSE). The core was written for this package and
+contains no code from igraph; its soft fma is adapted from musl libc (MIT licence, see `native/README.md`), and it
+implements the MT19937 generator step (Matsumoto and Nishimura) as CPython's `random` module does, so that seeded runs
+draw exactly what `random.Random` would.

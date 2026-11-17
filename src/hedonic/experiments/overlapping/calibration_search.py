@@ -8,7 +8,9 @@ one-dimensional searches whose structure follows from the theory of the hedonic 
    sign at a Familiarity threshold (a local ratio in (0, 1)), and the accuracy profile is searched in log gamma: a scan at
    factor-2 spacing over ``[rho_in / 32, rho_in]`` (``rho_in`` the median internal density of the reference
    communities), a gallop outward while the best probe is the outermost one (within ``[rho, 0.9]``, stopping on a
-   plateau), then a bracketed golden-section search until the bracket is narrower than ``--tol-u``. The clique regime
+   plateau), then a bracketed golden-section search until the bracket is narrower than ``--tol-u``. With ``--fixed-M`` (the
+   resolution only, as the paper calibrates Hedonic at the unlimited cap -1) the scan covers ``[1e-6, 0.5]`` at
+   factor-4 spacing instead, because the profile can peak far below the density. The clique regime
    ``gamma -> 1`` is probed once on its own (``EXTREMAL``), because the profile can have a second plateau there.
 2. **Cap**, on ``log2 M``: gallop up while doubling gains at least ``--delta`` (or until the returned covers certify that
    the cap no longer binds: no vertex at the cap and every vertex at an uncapped best response), gallop down while
@@ -70,12 +72,20 @@ from typing import Any
 import numpy as np
 
 from hedonic import Game
+from hedonic.experiments.overlapping import limits, memwatch
 from hedonic.experiments.overlapping import parallel as par
 from hedonic.experiments.overlapping.calibration_audit import CoverAudit, active_density, internal_densities
 
 PHI = (math.sqrt(5.0) - 1.0) / 2.0
 EXTREMAL = 0.999  # clique regime: every frustrated move resolves against strangers
 PHASE = "local"  # the only phase hedonic 2.0 has
+# The resolution-only search (``--fixed-M``, the paper's unlimited cap -1): a log grid at factor-4 spacing over
+# [1e-6, 0.5], then golden section around the best point. On the SNAP top5000 pairs the F1 profile has a peak near the
+# reference density and another two to three decades below it (YouTube: 0.434 at 0.065, 0.508 at 3e-5), which the
+# default bracket [rho_in/32, rho_in] misses.
+WIDE_SCAN = (1e-6, 0.5)
+WIDE_SCAN_FACTOR = 4.0
+WIDE_SCAN_EVALS = 20
 MULTILEVEL_GONE = ("the multilevel phase is not available in hedonic 2.0 (overlapping multilevel was removed; "
                    "only local moving remains): use --phase local")
 
@@ -108,6 +118,9 @@ def configure(out: str | Path, *, tag: str = "main", jobs: int = 1, slot_dir: st
     SNAP_CACHE_DIR = Path(snap_cache_dir).expanduser() if snap_cache_dir else None
     DOWNLOAD = bool(download)
     CACHE.clear()
+
+
+DEFAULT_TIMEOUT = 1800.0  # seconds one detector run may take (``--timeout``); a queue's limit lowers it
 
 
 def build() -> dict[str, str]:
@@ -236,6 +249,8 @@ def score(inst: dict, rows) -> dict:
 
 
 def label_free(inst: dict, rows, gamma: float, M: int) -> dict:
+    if M < 1:  # -1: no cap, the game's cap is the vertex count
+        M = len(rows)
     k = np.fromiter((len(r) for r in rows), dtype=np.int64, count=len(rows))
     act = np.asarray(inst["graph"].degree()) > 0
     au = CoverAudit(inst["graph"], rows)
@@ -300,15 +315,19 @@ def _held():
 
 def _compute(spec: str, cfg: dict, timeout: float) -> dict:
     """One detector run plus scoring and label-free diagnostics. Touches neither the cache nor the ledger, so it can
-    run in a forked worker."""
+    run in a forked worker. The probe's child is watched for memory (``memwatch.join``): below the free-memory floor
+    its tree is killed and the probe is recorded as ``status: "memory"``, which a later search reuses like a timeout."""
     key = cfg_key(spec, cfg)
     inst = load_instance(spec)
     fd, path = tempfile.mkstemp(suffix=".pkl"); os.close(fd)
     proc = mp.get_context("fork").Process(target=_child, args=(spec, cfg, path))
-    t0 = time.perf_counter(); proc.start(); proc.join(timeout)
-    if proc.is_alive():
+    t0 = time.perf_counter(); proc.start(); watch = memwatch.join(proc, timeout)
+    if watch.tripped is not None:
+        out = {**watch.tripped, "wall_seconds": time.perf_counter() - t0}
+    elif proc.is_alive():
         proc.kill(); proc.join()
-        out = {"status": "timeout", "wall_seconds": time.perf_counter() - t0}
+        # ``limit_seconds``: a larger timeout later runs this configuration again (``limits.stands``)
+        out = {"status": "timeout", "wall_seconds": time.perf_counter() - t0, "limit_seconds": float(timeout)}
     else:
         try:
             with open(path, "rb") as fh:
@@ -359,7 +378,9 @@ def evaluate_many(spec: str, cfgs: list[dict], *, timeout: float, objective: str
     todo: dict[str, dict] = {}
     for cfg in cfgs:
         key = cfg_key(spec, cfg)
-        if key not in CACHE and key not in todo:
+        # A run stopped at a timeout answers only under a timeout no larger than that one: one detector run each
+        known = key in CACHE and limits.stands(CACHE[key], timeout, default=DEFAULT_TIMEOUT)
+        if not known and key not in todo:
             todo[key] = cfg
     if todo:
         load_instance(spec)  # in this process, before any fork, so the workers share it
@@ -433,10 +454,10 @@ class Probe:
 
 # ------------------------------------------------------------------ searches
 def golden_max_log(f, lo: float, hi: float, *, tol_u: float, max_evals: int,
-                   floor: float, ceil: float, plateau: float = 0.0, prefetch=None) -> dict:
+                   floor: float, ceil: float, plateau: float = 0.0, prefetch=None, scan_factor: float = 2.0) -> dict:
     """Maximize f(gamma) over u = log gamma, allowing a multimodal profile.
 
-    1. Scan: probes at factor-2 spacing from lo to hi (log grid), because the profile has a Familiarity peak and a
+    1. Scan: probes at factor-2 spacing (``scan_factor``) from lo to hi (log grid), because the profile has a Familiarity peak and a
        separate extremal plateau as gamma -> 1 (clique regime), which golden section alone can confuse.
     2. Gallop: while the best probe is the outermost one on either side, add a probe a factor 2 further out, within
        [floor, ceil]; stop when that step gains less than ``plateau`` (below the smallest Familiarity threshold, or above
@@ -457,7 +478,7 @@ def golden_max_log(f, lo: float, hi: float, *, tol_u: float, max_evals: int,
 
     uf, uc = math.log(floor), math.log(ceil)
     a0, b0 = math.log(lo), math.log(hi)
-    k = max(2, math.ceil((b0 - a0) / math.log(2.0)))
+    k = max(2, math.ceil((b0 - a0) / math.log(scan_factor)))
     if prefetch is not None:
         prefetch([math.exp(round(a0 + (b0 - a0) * i / k, 9)) for i in range(k + 1)])
     for i in range(k + 1):
@@ -581,12 +602,18 @@ def tune(spec: str, phase: str = PHASE, *, M0: int, M_max: int, seeds: list[int]
     probe = Probe(spec, base, seeds, timeout=timeout, objective=objective)
     lo, hi = gamma_bracket or (inst["rho_in"] / 32.0, inst["rho_in"])
     floor, ceil = inst["rho"], 0.9
+    scan_factor = 2.0
+    if fixed_M is not None and gamma_bracket is None:
+        # resolution only: the accuracy profile can have two separate peaks (one far below the density), so scan the
+        # whole range on a coarse log grid first and refine around the best point
+        lo, hi = WIDE_SCAN
+        floor, scan_factor, max_evals = min(floor, lo / 10.0), WIDE_SCAN_FACTOR, max(max_evals, WIDE_SCAN_EVALS)
     M = fixed_M or min(M_start or M0 * 4, M_max)  # the search never chooses a cap above M_max
     # stage 1: resolution at a generous cap (interior regime), plus the extremal clique regime gamma -> 1 as one
     # separate probe
     J_ext = probe(gamma=EXTREMAL, M=M) if extremal else float("nan")
     g1 = golden_max_log(lambda gamma: probe(gamma=gamma, M=M), lo, hi, tol_u=tol_u,
-                        max_evals=max_evals, floor=floor, ceil=ceil, plateau=delta / 2,
+                        max_evals=max_evals, floor=floor, ceil=ceil, plateau=delta / 2, scan_factor=scan_factor,
                         prefetch=lambda gammas: probe.prefetch([{"gamma": g, "M": M} for g in gammas]))
     stages = {"gamma_at_M": {"M": M, **g1}, "extremal": {"gamma": EXTREMAL, "M": M, "J": J_ext,
                                                         "beats_interior": bool(J_ext > g1["J"] + delta)}}
@@ -709,11 +736,13 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--confirm-seeds", default="0,1,2,3,4")
     ap.add_argument("--M0", type=int, default=8)
     ap.add_argument("--M-max", type=int, default=128, help="the largest cap the search may choose")
-    ap.add_argument("--fixed-M", type=int, help="search the resolution only, at this cap")
+    ap.add_argument("--fixed-M", type=int, help="search the resolution only, at this cap (-1: no cap); without "
+                    "--bracket the scan covers [1e-6, 0.5] at factor-4 spacing")
     ap.add_argument("--delta", type=float, default=0.002, help="score tolerance of the cap search, snap and gallop stop")
     ap.add_argument("--tol-u", type=float, default=0.1, help="width of the final golden-section bracket in log gamma")
     ap.add_argument("--max-evals", type=int, default=14, help="evaluations of one resolution search at most")
-    ap.add_argument("--timeout", type=float, default=1800, help="seconds before a detector run is killed")
+    ap.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT,
+                    help="seconds before one detector run is killed (each run on its own, never a search's total)")
     ap.add_argument("--bracket", help="lo,hi absolute gamma bracket of the first scan (default rho_in/32, rho_in)")
     ap.add_argument("--gamma", type=float, help="probe mode: the resolution")
     ap.add_argument("--gammas", help="grid mode: comma-separated resolutions (fractions allowed)")

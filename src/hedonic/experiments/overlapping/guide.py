@@ -1,7 +1,7 @@
 """``hedonic guide``: a short, current tour of what the CLI can do and what to do next.
 
     hedonic guide             where you are (data, runs) and the topics
-    hedonic guide TOPIC       one topic: start, benchmark, paper, spectrum, disjoint, runs, config, data, update
+    hedonic guide TOPIC       one topic: start, benchmark, overlap, spectrum, disjoint, runs, config, data, update
     hedonic guide --list      topic names only
 
 In a terminal, the index is an arrow-key menu. Everything is read from the local
@@ -29,7 +29,7 @@ TOPICS: dict[str, tuple[str, str]] = {
 
         The default run takes about a minute: DBLP, a 5,000-vertex subgraph, seed 0, Hedonic and CoDeSEG.
         Everything runs detached, so closing the terminal or pressing Ctrl-C only closes the view.
-        To reproduce the overlapping-communities paper, see `hedonic guide paper`.
+        To reproduce the overlapping-communities paper, see `hedonic guide overlap`.
     """),
     "detect": ("One network, one method (`hedonic detect`)", """
         hedonic detect                                    a wizard: network, its parameters, method, its parameters, seed
@@ -72,26 +72,34 @@ TOPICS: dict[str, tuple[str, str]] = {
         A record whose bytes changed is moved aside (renamed, never deleted) and rerun. To see the scan only:
         hedonic run exp --config FILE --name NAME --scan
     """),
-    "paper": ("Reproduce the overlapping-communities paper (`hedonic run queue paper`)", """
+    "overlap": ("Reproduce the overlapping-communities paper (`hedonic run queue overlap`)", """
         hedonic setup --all --dry-run           the eight graph/cover pairs and eight baselines it needs
         hedonic setup --all                     download the pairs, build and install the baselines
-        hedonic run queue paper --dry-run       the six runs, pair by pair, with what is already done
-        hedonic run queue paper                 start it (durable, resumable; days on a laptop)
-        hedonic run queue paper --root DIR      the same, writing under DIR instead of OUTPUT_DIR/paper-queue
-        hedonic run attach paper-queue          the live tree view (q closes the view only)
+        hedonic run queue overlap --dry-run       its runs, the order of their steps, with what is already done
+        hedonic run queue overlap                 start it (durable, resumable; days on a laptop)
+        hedonic run queue overlap --root DIR      the same, writing under DIR instead of OUTPUT_DIR/overlap-queue
+        hedonic run attach overlap-queue          the live tree view (q closes the view only)
 
-        The queue runs the Hedonic calibration, the baseline calibration and the synthetic networks, then, on each
-        pair in turn (top5000 covers first), the ground-truth start curve, the robustness spectrum and the benchmark.
+        The queue goes method by method, in two phases. Phase 1, on DBLP, Amazon and YouTube: Hedonic first (the
+        synthetic networks, its calibration of the resolution only with no membership cap, then the robustness
+        spectrum, the ground-truth start curve and its benchmark rows one pair at a time), then each baseline in
+        turn, cheapest first: its calibration, then its benchmark. Phase 2 repeats every method, Hedonic first, on
+        LiveJournal/top5000 and Friendster/top5000, the largest graphs, so they cannot hold up the rest. All
+        benchmark items write into one folder so a finished unit is reused. The benchmark items only save each
+        answer (cover, labels, vertex ids, graph hash); each phase ends with an audit item that audits every saved
+        cover, so all detector runs of a phase finish before any audit.
         Every run decides from its files what is done, so starting the queue again continues it. The queue checks
         that the data and methods are prepared and prints the `hedonic setup` command when they are not.
 
         The runs can also be started one by one:
-        hedonic run calibrate --networks dblp:top5000 --mode auto   re-tune Hedonic's (gamma, cap); writes hoc_tuned.json
+        hedonic run calibrate --networks dblp:top5000 --mode auto   re-tune Hedonic's (gamma, cap); writes hedonic_tuned.json
+        hedonic run calibrate --networks dblp:top5000 --cap unlimited   the resolution only, no cap (the paper's)
         hedonic run calibrate-baselines --networks PAIRS --methods all   label-free baseline calibration
-            (--method-budget angel=3:60, --transfer PAIRS, --adopt-from DIR: the queue's budget, unsearched pairs
+            (--method-budget angel=5:240, --transfer PAIRS, --adopt-from DIR: the queue's budget, unsearched pairs
             that take the nearest calibrated pair's setting, and searches copied from an earlier calibration)
         hedonic run exp --config paper-benchmark --tuned FILE[,FILE]     the benchmark at the calibrated settings
         hedonic run audit --source RUN          exact robustness of the covers a run saved without --robustness
+        hedonic-exp overlapping-rescore --source RUN --networks PAIRS   score the saved covers again (--check: reproduce)
     """),
     "spectrum": ("Ground-truth robustness spectrum (`hedonic run spectrum`)", """
         hedonic show covers                       present / missing / unsupported graph/cover pairs
@@ -135,6 +143,9 @@ TOPICS: dict[str, tuple[str, str]] = {
         hedonic run stop NAME           explicit; nothing stops a run implicitly
         hedonic run resume [NAME]       continue an interrupted, stopped or failed run
         hedonic run check [NAME]        morning check: replay sampled results from their seeds and compare
+        hedonic run check --replay N [NAME | --root DIR]
+                                        after a change of core: replay N Hedonic units and N cover audits with the
+                                        loaded core, bit for bit (--dry-run lists them; a pass goes to adopted.json)
 
         Statuses: running, completed, completed_with_failures, stopped, interrupted (the worker vanished, for
         example after a reboot) and failed (an error, with its reason). NAME may be a unique fragment.
@@ -148,6 +159,33 @@ TOPICS: dict[str, tuple[str, str]] = {
         A queue file that lists `pairs` and marks runs `by_pair = true` goes pair by pair: the whole block of those
         runs on the first pair, then on the next, in the order of `pairs`. A run between its pairs reads as part done
         (the half-filled mark), not as stopped. `hedonic run queue FILE --dry-run` prints the steps in order.
+        `schedule = "shortest"` in the file (or --schedule shortest) still runs one step at a time, but takes at each
+        turn the ready step with the smallest estimate; a run that reads another's folder (--tuned) or names it in
+        `after = [...]` waits for it.
+
+        An item can be a whole queue: `run = ["queue", "overlap"]` (a shipped name or a file, optionally with
+        "--root", DIR). It starts that queue, waits until it completes and goes on, so `hedonic run queue all` runs
+        the overlap paper's queue and then the disjoint paper's. The tree shows the inner queue's runs under it.
+
+        Time limits, in the queue file (or `hedonic run queue FILE --timeout 2h --max-eta 6h`):
+            [limits]                       every item of this queue and of the queues it runs
+            timeout = "2h"                 a single run still going after 2 hours is stopped (recorded as a timeout)
+            max_eta = "6h"                 a pair whose single run is estimated over 6 hours is skipped
+            limits = { timeout = "30m" }   under an [[items]] entry: that item only ("none" removes a limit)
+        Both are about one run (a detector run, a calibration probe, a start-quality condition), never a total: a
+        calibration whose thirty probes each finish inside the limit is never stopped because together they take
+        longer. A limit never changes what a record is: a run it stopped runs again under a larger limit or none.
+        The spectrum keeps its own per-run timeout (part of each condition's identity); --dry-run shows, per run,
+        what one run is and where a limit does not apply.
+
+        Memory: while a detector runs (a benchmark run, a calibration probe, a start-quality condition), the
+        machine's free memory is read twice a second; below the floor (HEDONIC_MEMORY_FLOOR, default 10% free)
+        that run's processes are killed and it is recorded as out of memory (status memory, with the floor and
+        the free memory seen). Like a timeout it stands: the queue does not run it again unless the floor is lower
+        or you add --rerun-memory to `hedonic run ...`. In a queue file, `--alone PAIRS` runs those pairs of a
+        calibration one at a time, never beside another, and `--out-of-memory METHOD@PAIR,...` records a run as
+        out of memory without starting it (the overlap queue does so for Clique Percolation on LiveJournal and
+        Friendster). Tables and `hedonic run check` say "out of memory".
     """),
     "config": ("Your settings (`hedonic config`)", """
         hedonic config                                show ~/.config/hedonic/config.toml

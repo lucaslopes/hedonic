@@ -6,8 +6,8 @@ completed and cap-projected exactly as in the ground-truth spectrum (``gt_spectr
 detector is the spectrum's worker (``ground_truth_robustness._detector_worker``): Hedonic local moving, the only phase
 hedonic 2.0 has (``phase = "local"``; asking for the 1.x ``multilevel`` phase is an error). A pair missing locally is
 downloaded first (``snap.ensure_pair``). The settings (gamma, cap) come from the calibration files given with
-``--tuned`` (``hoc_tuned.json``, method key ``hedonic``; several files: a later one overrides an earlier one), else from
-the frozen ``quickstart.HOC_TUNED``; a pair with neither takes the DBLP settings (the held-out transfer).
+``--tuned`` (``hedonic_tuned.json``, method key ``hedonic``; several files: a later one overrides an earlier one), else from
+the frozen ``quickstart.HEDONIC_TUNED``; a pair with neither takes the DBLP settings (the held-out transfer).
 
 Levels. A *swap* level with incidence distance d starts from the projected reference and applies degree-preserving
 incidence switches (``perturb_cover_incidence`` below: the output of ``robustness.perturb_cover_incidence``, computed
@@ -51,6 +51,7 @@ from typing import Any, Callable
 from hedonic.experiments import runtime
 from hedonic.experiments.config import RUNS_ROOT, expand_path
 from hedonic.experiments.resources import config_path as resolve_config
+from hedonic.experiments.overlapping import limits, memwatch
 from hedonic.experiments.overlapping import gt_spectrum as gs
 from hedonic.experiments.overlapping import ground_truth_robustness as v3
 from hedonic.experiments.overlapping import parallel
@@ -68,11 +69,13 @@ LEGACY_PHASE = "multilevel"  # a 1.x record without a phase field ran this phase
 REMOVED_PHASES = ("multilevel", "multi-phase", "multiphase", "hoc_multilevel", "hoc-multilevel")
 PHASE_TOKEN = "|phase="  # every resume key has it; a key without it was written before the phase option (1.x)
 CODE_TOKEN = "|code="  # the code that ran the condition (hedonic version and core SHA-256)
-METHOD = "hedonic"  # the quickstart.HOC_TUNED row and the method key of a calibration file
+METHOD = "hedonic"  # the quickstart.HEDONIC_TUNED row and the method key of a calibration file
 PHASE_NAME = {"local": "Hedonic local moving"}
 PHASE_DESCRIPTION = {"local": "local moves to an equilibrium"}
 DEFAULT_NETWORKS = ("dblp", "amazon", "youtube")
 DEFAULT_SEEDS = "0-4"
+CAP_SOURCES = ("tuned", "reference")
+REFERENCE_CAP = "reference"  # a setting's cap: the pair's largest reference multiplicity, read once its graph is loaded
 DEFAULT_LEVELS = ("0", "0.005", "0.02", "0.05", "0.1", "0.2", "0.5", "1", "random")
 DEFAULT_OUTPUT = RUNS_ROOT / "start-quality"
 SWAP_SEED_BASE = 100  # perturbation seed = 100 + detector seed
@@ -105,9 +108,10 @@ def parse_phase(value: str) -> str:
 
 @lru_cache(maxsize=1)
 def code_identity() -> str:
-    """The code a condition ran on, as it enters the record key: ``hedonic-<version>+core-<first 16 hex of its SHA-256>``."""
+    """The code a condition ran on, as it enters the record key: ``hedonic-<results series>+core-<first 16 hex of the
+    core's identity>`` (``runtime.build_identity``: the full version and the compiled bytes are provenance)."""
     sha = runtime.core_source_sha256() or "unknown"
-    return f"hedonic-{runtime.release_series()}+core-{sha[:16]}"
+    return f"hedonic-{runtime.RESULTS_SERIES}+core-{sha[:16]}"
 
 
 def load_tuned(files: str | list[str] | None) -> tuple[dict | None, list[str]]:
@@ -130,18 +134,18 @@ def load_tuned(files: str | list[str] | None) -> tuple[dict | None, list[str]]:
 def tuned_setting(target: str, phase: str, calibrated: dict | None = None) -> dict[str, Any]:
     """The tuned (cap, gamma) of a network or of a ``network:cover`` target.
 
-    A calibration file (``--tuned``) comes first and quickstart.HOC_TUNED second; in each the pair's own entry
+    A calibration file (``--tuned``) comes first and quickstart.HEDONIC_TUNED second; in each the pair's own entry
     (``dblp:top5k``; a plain network is its ``all`` cover) beats its network's. A network with neither (YouTube,
     LiveJournal before they are calibrated) takes the DBLP settings, the held-out transfer the paper has always used.
 
     ``calibrated`` is the result of :func:`load_tuned` ({"hedonic": {target: params}}).
     """
     parse_phase(phase)
-    frozen = qs.HOC_TUNED[METHOD]
+    frozen = qs.HEDONIC_TUNED[METHOD]
     base, cover = qs.split_target(target)
     keys = [f"{base}:{cover or COVER}", target, base]
     for rows, source in (((calibrated or {}).get(METHOD) or {}, "calibration file"),
-                         (frozen, "quickstart.HOC_TUNED")):
+                         (frozen, "quickstart.HEDONIC_TUNED")):
         for key in keys:
             if key in rows:
                 values = rows[key]
@@ -216,7 +220,7 @@ def token_of(level: float | str) -> str:
 def config_defaults(path: str) -> dict[str, str]:
     """The ``[start_quality]`` table as command-line defaults (lists joined into comma lists).
 
-    ``path`` is a file, or the name of a shipped config (``start-quality-hoc-local``; ``resources.config_path``)."""
+    ``path`` is a file, or the name of a shipped config (``start-quality-hedonic``; ``resources.config_path``)."""
     file = resolve_config(path)
     if not file.is_file():
         raise ValueError(f"no such config: {file}")
@@ -240,7 +244,7 @@ def build_parser() -> argparse.ArgumentParser:
                      "condition)"),
     )
     parser.add_argument("--config", help="TOML file with a [start_quality] table, or the name of a shipped config "
-                                         "(start-quality-hoc-local); explicit flags override it")
+                                         "(start-quality-hedonic); explicit flags override it")
     parser.add_argument("--networks", help="comma list of dblp, amazon, youtube, livejournal (default: dblp, amazon, "
                                            "youtube); network:cover (dblp:top5k) names the cover to analyse")
     parser.add_argument("--covers", help="ground-truth covers to cross with every network, e.g. all,top5k: each pair is "
@@ -254,12 +258,18 @@ def build_parser() -> argparse.ArgumentParser:
                         help="output folder for start_quality.jsonl and the summary CSV "
                              f"(default: the config's output, else {DEFAULT_OUTPUT})")
     parser.add_argument("--tuned", action="append", metavar="FILE[,FILE]",
-                        help="calibrated settings (hoc_tuned.json of `hedonic run calibrate`, method key hedonic) "
-                             "instead of quickstart.HOC_TUNED; a comma list or repeated flags, a later file overriding "
+                        help="calibrated settings (hedonic_tuned.json of `hedonic run calibrate`, method key hedonic) "
+                             "instead of quickstart.HEDONIC_TUNED; a comma list or repeated flags, a later file overriding "
                              "an earlier one")
+    parser.add_argument("--cap", choices=CAP_SOURCES,
+                        help="membership cap: tuned (the calibrated cap, default) or reference (each pair's largest "
+                             "number of reference communities on one vertex: the experiment leverages the ground truth)")
     parser.add_argument("--workers", type=int, metavar="N",
                         help="conditions run side by side in forked workers (default: the performance cores, or "
                              "HEDONIC_WORKERS); 1 runs them one at a time in this process")
+    parser.add_argument("--limit-seconds", type=float, metavar="S",
+                        help="a queue's time limit for one condition's detector run: a run still going after S seconds is "
+                             "stopped and recorded as a timeout (rerun under a larger limit or none)")
     parser.add_argument("--dry-run", action="store_true", help="print the plan; load no graph and write nothing")
     parser.add_argument("--overwrite", action="store_true",
                         help="delete this study's records first (a plain rerun resumes instead)")
@@ -288,6 +298,8 @@ def resolve(argv: list[str]) -> dict[str, Any]:
     levels = parse_levels(args.levels or ",".join(DEFAULT_LEVELS))
     if args.workers is not None and args.workers < 1:
         raise ValueError("--workers must be at least 1")
+    if args.limit_seconds is not None and not args.limit_seconds > 0:
+        raise ValueError("--limit-seconds must be a positive number of seconds")
     return {
         "config": str(resolve_config(config).resolve()) if config else None,
         "phase": phase,
@@ -296,11 +308,24 @@ def resolve(argv: list[str]) -> dict[str, Any]:
         "levels": levels,
         "output": expand_path(args.output or DEFAULT_OUTPUT).resolve(),
         "tuned": ",".join(tuned_paths) or None,
-        "settings": {network: tuned_setting(network, phase, calibrated) for network in networks},
+        "settings": {network: with_cap(tuned_setting(network, phase, calibrated), args.cap) for network in networks},
         "workers": parallel.default_workers(args.workers),
+        "limit": args.limit_seconds,
         "dry_run": bool(args.dry_run),
         "overwrite": bool(args.overwrite),
     }
+
+
+def with_cap(setting: dict[str, Any], source: str | None) -> dict[str, Any]:
+    """The calibrated setting, or with its cap replaced by the reference's (``--cap reference``)."""
+    return {**setting, "cap": REFERENCE_CAP} if source == REFERENCE_CAP else setting
+
+
+def setting_cap(job: Any, setting: dict[str, Any]) -> int:
+    """The cap a condition runs at: the calibrated one, or the largest number of reference communities on one vertex."""
+    if setting["cap"] == REFERENCE_CAP:
+        return max(map(len, job.start(None).memberships))
+    return int(setting["cap"])
 
 
 def condition_key(network: str, level: float | str, seed: int, setting: dict[str, Any], phase: str) -> str:
@@ -514,11 +539,12 @@ def score(cover: list[list[int]], reference: list[list[int]], n_vertices: int) -
 
 
 def run_condition(job: Any, setting: dict[str, Any], level: float | str, seed: int, key: str,
-                  phase: str) -> dict[str, Any]:
+                  phase: str, limit: float | None = None) -> dict[str, Any]:
     graph = job.graph
     n = graph.vcount()
-    cap, gamma = int(setting["cap"]), float(setting["gamma"])
-    start = job.start(cap)  # the cap projection of the reference when the cap is below its multiplicity
+    cap, gamma = setting_cap(job, setting), float(setting["gamma"])
+    # the cap projection of the reference when the cap is below its multiplicity; -1 (no cap) keeps the reference
+    start = job.start(cap if cap >= 1 else None)
     reference = start.memberships
     incidences = sum(map(len, reference))
     if level == "random":
@@ -533,10 +559,23 @@ def run_condition(job: Any, setting: dict[str, Any], level: float | str, seed: i
         requested, perturbation_seed = float(level), SWAP_SEED_BASE + seed
     start_f1, start_onmi = score(start_cover, job.gt_cover, n)
     started = time.monotonic()
-    # allow_isolation is True, as in the calibrated rows (methods._hedonic_local).
-    outcome = v3._detector_worker(graph, contiguous_labels(start_memberships), cap, gamma, phase, True, seed)
+    # allow_isolation is True, as in the calibrated rows (methods._hedonic_local). ``limit`` bounds this one detector run;
+    # the memory watchdog (``memwatch``) stops it below the free-memory floor.
+    stopped = None
+    try:
+        with limits.wall_clock(limit), memwatch.in_process():
+            outcome = v3._detector_worker(graph, contiguous_labels(start_memberships), cap, gamma, phase, True, seed)
+    except limits.RunLimitReached as exc:
+        stopped = limits.timed_out(exc.seconds, started)
+    except memwatch.MemoryLimitReached as exc:
+        stopped = {**exc.fields(), "seconds": time.monotonic() - started}
+    if stopped is not None:
+        return {"study": STUDY, "schema_version": SCHEMA_VERSION, "key": key, "phase": phase, "network": job.dataset,
+                "cover": job.cover, "level": label_of(level), "level_kind": "random" if level == "random" else "swap",
+                "detector_seed": seed, "start_symmetric_f1": start_f1, "start_onmi": start_onmi, "cap": cap,
+                "gamma": gamma, "n_vertices": n, "n_edges": graph.ecount(), "code": code_identity(), **stopped}
     seconds = time.monotonic() - started
-    final_raw = v3._normalize_raw_memberships(outcome["final_memberships"], n, cap)
+    final_raw = v3._normalize_raw_memberships(outcome["final_memberships"], n, cap if cap >= 1 else n)
     final_cover = rb.canonicalize_cover(rb.vertex_memberships_to_cover(final_raw), n)
     final_f1, final_onmi = score(final_cover, job.gt_cover, n)
     return {
@@ -565,6 +604,7 @@ def run_condition(job: Any, setting: dict[str, Any], level: float | str, seed: i
         "final_communities": len(final_cover),
         "final_max_memberships": max(map(len, final_raw)),
         "cap": cap,
+        "cap_source": REFERENCE_CAP if setting["cap"] == REFERENCE_CAP else "tuned",
         "gamma": gamma,
         "n_vertices": n,
         "n_edges": graph.ecount(),
@@ -574,9 +614,13 @@ def run_condition(job: Any, setting: dict[str, Any], level: float | str, seed: i
 
 
 # --------------------------------------------------------------------------- records
-def read_records(path: Path) -> dict[str, dict[str, Any]]:
+def read_records(path: Path, limit: float | None = None) -> dict[str, dict[str, Any]]:
     """Valid records by resume key (a torn or corrupt line is skipped; the first record of a key wins). A record without
-    a phase field was written before the phase option (1.x), so it is HOC-multilevel."""
+    a phase field was written before the phase option (1.x), so it is the 1.x multilevel phase.
+
+    A condition a time limit stopped counts only under a ``limit`` no larger than that one (``limits.stands``); the
+    latest record of a key wins over a stopped one, so a rerun under a larger limit replaces it. A condition the memory
+    watchdog stopped (``status: "memory"``) counts the same way, by its free-memory floor (``memwatch.stands``)."""
     records: dict[str, dict[str, Any]] = {}
     if not path.is_file():
         return records
@@ -589,8 +633,15 @@ def read_records(path: Path) -> dict[str, dict[str, Any]]:
             continue
         if isinstance(record, dict) and isinstance(record.get("key"), str):
             phase = str(record.setdefault("phase", LEGACY_PHASE))
-            records.setdefault(resume_key(record["key"], phase), record)
-    return records
+            key = resume_key(record["key"], phase)
+            if key not in records or records[key].get("status") in (limits.TIMEOUT_STATUS, limits.MEMORY_STATUS):
+                records[key] = record
+    return {key: record for key, record in records.items() if limits.stands(record, limit)}
+
+
+def completed(record: dict[str, Any]) -> bool:
+    """A condition whose detector run finished (not one a time limit stopped)."""
+    return record.get("status", "completed") == "completed"
 
 
 def repair_tail(path: Path) -> None:
@@ -622,7 +673,7 @@ def write_summary(path: Path, todo: list[dict[str, Any]], records: dict[str, dic
     """Mean and sample standard deviation over seeds for each (network, level), from the current plan's records."""
     groups: dict[tuple[str, str], list[dict[str, Any]]] = {}
     for condition in todo:
-        if condition["key"] in records:
+        if condition["key"] in records and completed(records[condition["key"]]):
             groups.setdefault((condition["network"], label_of(condition["level"])), []).append(records[condition["key"]])
     rows = []
     for (network, level), group in groups.items():
@@ -668,6 +719,9 @@ def load_network_job(target: str) -> Any:
 
 
 def progress_line(done: int, total: int, record: dict[str, Any]) -> str:
+    if not completed(record):
+        return (f"[{done}/{total}] {record['network']} level={record['level']} seed={record['detector_seed']} "
+                f"seconds={record['seconds']:.2f} {record['status']}: {record.get('reason', '')}")
     return (f"[{done}/{total}] {record['network']} level={record['level']} seed={record['detector_seed']} "
             f"seconds={record['seconds']:.2f} start_f1={record['start_symmetric_f1']:.4f} "
             f"final_f1={record['final_symmetric_f1']:.4f}")
@@ -683,7 +737,7 @@ def run_study(plan: dict[str, Any], *, loader: Callable[[str], Any] = load_netwo
         for name in (RESULTS_NAME, SUMMARY_NAME):
             (out / name).unlink(missing_ok=True)
     repair_tail(results)
-    records = read_records(results)
+    records = read_records(results, plan.get("limit"))
     todo = conditions(plan)
     count = sum(1 for condition in todo if condition["key"] in records)
     emit(f"start-quality: {len(todo)} conditions; {count} already in {results}; {len(todo) - count} to run")
@@ -694,10 +748,12 @@ def run_study(plan: dict[str, Any], *, loader: Callable[[str], Any] = load_netwo
         job = loader(network)  # loaded here, before any fork, so the workers share it
         workers = min(int(plan.get("workers") or 1), len(pending))
         setting = plan["settings"][network]
-        job.start(int(setting["cap"]))  # the cap projection is cached on the job: computed once here, not once per worker
+        cap = setting_cap(job, setting)
+        job.start(cap if cap >= 1 else None)  # the cap projection is cached on the job: computed once here, not once per worker
 
         def task(condition: dict[str, Any], job: Any = job, setting: dict[str, Any] = setting) -> dict[str, Any]:
-            return run_condition(job, setting, condition["level"], condition["seed"], condition["key"], plan["phase"])
+            return run_condition(job, setting, condition["level"], condition["seed"], condition["key"], plan["phase"],
+                                 plan.get("limit"))
 
         for index, record in parallel.run_forked(task, pending, workers):
             record["workers"] = workers  # how many conditions shared the machine with this one
@@ -712,7 +768,7 @@ def run_study(plan: dict[str, Any], *, loader: Callable[[str], Any] = load_netwo
 
 def plan_lines(plan: dict[str, Any]) -> list[str]:
     todo = conditions(plan)
-    present = sum(1 for condition in todo if condition["key"] in read_records(plan["output"] / RESULTS_NAME))
+    present = sum(1 for condition in todo if condition["key"] in read_records(plan["output"] / RESULTS_NAME, plan.get("limit")))
     levels = ", ".join(label_of(level) for level in plan["levels"])
     phase = plan["phase"]
     lines = [
@@ -727,6 +783,8 @@ def plan_lines(plan: dict[str, Any]) -> list[str]:
         f"  workers  {plan.get('workers', 1)} conditions side by side"
         + (" (seconds is the detector's wall-clock with that many running together)" if plan.get("workers", 1) > 1 else ""),
     ]
+    if plan.get("limit") is not None:
+        lines.append(f"  limit    {limits.fmt(plan['limit'])} per condition's detector run (a run past it is a timeout)")
     for network in plan["networks"]:
         setting = plan["settings"][network]
         lines.append(f"  {network:<18} cap {setting['cap']} · gamma {setting['gamma']:.6g} ({setting['source']})")
@@ -764,14 +822,19 @@ def _front_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--config", required=True,
                         help="TOML file with a [start_quality] table, or the name of a shipped config "
-                             "(start-quality-hoc-local)")
+                             "(start-quality-hedonic)")
     parser.add_argument("--networks", help="override the config's networks (comma list)")
     parser.add_argument("--covers", help="override the config's covers (comma list, e.g. all,top5k)")
     parser.add_argument("--tuned", action="append", metavar="FILE[,FILE]",
-                        help="calibrated settings (hoc_tuned.json of `hedonic run calibrate`, method key hedonic) "
-                             "instead of quickstart.HOC_TUNED; a comma list or repeated flags")
+                        help="calibrated settings (hedonic_tuned.json of `hedonic run calibrate`, method key hedonic) "
+                             "instead of quickstart.HEDONIC_TUNED; a comma list or repeated flags")
+    parser.add_argument("--cap", choices=CAP_SOURCES,
+                        help="membership cap: tuned (the calibrated cap, default) or reference (each pair's largest "
+                             "number of reference communities on one vertex: the experiment leverages the ground truth)")
     parser.add_argument("--workers", type=int, metavar="N",
                         help="conditions run side by side (default: the performance cores, or HEDONIC_WORKERS)")
+    parser.add_argument("--limit-seconds", type=float, metavar="S",
+                        help="a queue's time limit for one condition's detector run (a run past it is a timeout)")
     parser.add_argument("--name", help="run name (default: the config file's name)")
     parser.add_argument("--output-dir", help="run folder, which holds the records (default: the config's output, "
                                              "else <output_dir>/<name>)")
@@ -795,8 +858,12 @@ def front_plan(args: argparse.Namespace) -> dict[str, Any]:
         study += ["--covers", args.covers]
     for tuned in args.tuned or []:
         study += ["--tuned", tuned]
+    if args.cap:
+        study += ["--cap", args.cap]
     if args.workers is not None:
         study += ["--workers", str(args.workers)]
+    if args.limit_seconds is not None:
+        study += ["--limit-seconds", f"{args.limit_seconds:g}"]
     if args.output_dir:
         study += ["--output", str(expand_path(args.output_dir).resolve())]
     elif "output" not in config_defaults(str(config)):  # a named run: <output_dir>/<name>
@@ -817,7 +884,9 @@ def launch_argv(plan: dict[str, Any]) -> list[str]:
     """Every setting spelled out (no config file), so a resume rebuilds the same plan even if the file moves."""
     return ["--networks", ",".join(plan["networks"]), "--phase", plan["phase"],
             "--seeds", ",".join(map(str, plan["seeds"])), "--levels", ",".join(token_of(level) for level in plan["levels"]),
-            "--output", str(plan["output"]), "--workers", str(plan.get("workers", 1))] + (["--tuned", plan["tuned"]] if plan.get("tuned") else [])
+            "--output", str(plan["output"]), "--workers", str(plan.get("workers", 1))] + (["--tuned", plan["tuned"]] if plan.get("tuned") else []) + (
+        ["--cap", REFERENCE_CAP] if any(s["cap"] == REFERENCE_CAP for s in plan["settings"].values()) else []) + (
+        ["--limit-seconds", f"{plan['limit']:g}"] if plan.get("limit") is not None else [])
 
 
 def describe(plan: dict[str, Any]) -> str:
@@ -880,7 +949,7 @@ def work(name: str, entry: dict[str, Any], prog: dict[str, Any]) -> int:
     plan = resolve(entry["argv"])
     todo = conditions(plan)
     results = plan["output"] / RESULTS_NAME
-    already = sum(1 for condition in todo if condition["key"] in read_records(results))
+    already = sum(1 for condition in todo if condition["key"] in read_records(results, plan.get("limit")))
     ppath = rm.progress_path(entry)
     prog.update({"name": name, "kind": "startcurve", "status": "setup", "pid": os.getpid(), "started": time.time(),
                  "updated": time.time(), "describe": describe(plan), "command": entry["command"],

@@ -45,7 +45,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from hedonic.experiments.config import RUNS_ROOT, codeseg_cache_dir, expand_path
-from hedonic.experiments.overlapping import replication, snap, tui
+from hedonic.experiments.overlapping import memwatch, replication, snap, tui
 from hedonic.experiments.overlapping.tui import style
 
 # --------------------------------------------------------------------------- catalogue
@@ -135,6 +135,7 @@ class Config:
     preset: str = "screened"
     threads: int = os.cpu_count() or 1
     timeout: float = 600.0
+    limit: float | None = None              # a queue's time limit for one detector run (min with timeout; not identity)
     output_dir: str = str(RUNS_ROOT / "exp")  # a durable run writes to OUTPUT_DIR/NAME
     cache_dir: str = "~/.cache/hedonic"
     network_root: str | None = None
@@ -146,19 +147,28 @@ class Config:
     profile: str | None = None              # named config this run came from (informational)
     # Per-network method settings over the preset: {method key: {network: {param: value}}}.
     method_params: dict = field(default_factory=dict)
-    tuned: str = ""                         # calibration file (hoc_tuned.json) laid over the HOC rows of method_params
+    tuned: str = ""                         # calibration file (hedonic_tuned.json) laid over the Hedonic rows of method_params
     robustness: bool = False                # audit every saved cover (robustness/cover_audit.jsonl): needs covers, full graphs
     induce: str = "full"                    # "covered": every method sees only the subgraph induced by the cover's vertices
     replication: str = "auto"               # "auto": a deterministic method runs once (lowest seed); "all": every seed
+    shared_folder: bool = False             # output_dir is the run's folder itself, shared with other runs (never /NAME)
+    out_of_memory: str = ""                 # METHOD@PAIR,...: units recorded out of memory, never run (memwatch; not identity)
 
     def command(self) -> str:
-        allowed = {"output_dir", "cache_dir", "network_root", "json"} | ({"tuned", "method_params"} if self.tuned else set())
+        allowed = {"output_dir", "cache_dir", "network_root", "json", "shared_folder", "limit", "out_of_memory"} | (
+            {"tuned", "method_params"} if self.tuned else set())
         if self.profile in PROFILES and PROFILES[self.profile].differences(self) <= allowed:
             parts = ["hedonic run exp", "--config", self.profile]
             if self.tuned:
                 parts += ["--tuned", self.tuned]
             if self.output_dir != PROFILES[self.profile].output_dir:
                 parts += ["--output-dir", self.output_dir]
+            if self.shared_folder:
+                parts.append("--shared-folder")
+            if self.limit is not None:
+                parts += ["--limit-seconds", f"{self.limit:g}"]
+            if self.out_of_memory:
+                parts += ["--out-of-memory", self.out_of_memory]
             if self.cache_dir != "~/.cache/hedonic":
                 parts += ["--cache-dir", self.cache_dir]
             if self.network_root:
@@ -191,7 +201,17 @@ class Config:
             parts += ["--induce", self.induce]
         if self.replication != "auto":
             parts += ["--replication", self.replication]
+        if self.shared_folder:
+            parts.append("--shared-folder")
+        if self.limit is not None:
+            parts += ["--limit-seconds", f"{self.limit:g}"]
+        if self.out_of_memory:
+            parts += ["--out-of-memory", self.out_of_memory]
         return " ".join(shlex.quote(p) if " " in p and p != "hedonic run exp" else p for p in parts)
+
+    def declared_out_of_memory(self) -> dict[tuple[str, str], str]:
+        """``out_of_memory`` read: {(method key, network:cover): the reason cited} (``memwatch.parse_declared``)."""
+        return memwatch.parse_declared(self.out_of_memory, pair_key)
 
     def pretty_command(self) -> str:
         """The same command broken at option boundaries, for narrow terminals (shell line continuations)."""
@@ -217,21 +237,36 @@ PROFILES["paper"] = Config(networks=["dblp", "amazon"],
                            nodes=0, seeds=list(range(10)), preset="screened", timeout=3600.0,
                            order="seed,method,network", output_dir=str(RUNS_ROOT / "paper"), profile="paper",
                            save_covers=True, robustness=True)
-# "paper-hoc" reruns only the Hedonic rows of the whole-graph profile: DBLP and Amazon full graphs, seeds 0-9, at the
-# whole-graph settings the first calibration's bisection search selected per network (HOC_TUNED, frozen data; a run
+# "paper-hedonic" reruns only the Hedonic rows of the whole-graph profile: DBLP and Amazon full graphs, seeds 0-9, at
+# the whole-graph settings the first calibration's bisection search selected per network (HEDONIC_TUNED, frozen data; a run
 # with --tuned takes a newer calibration instead). Covers are kept so `hedonic run check` can rerun a sample and
 # compare them exactly.
-HOC_TUNED = {
+HEDONIC_TUNED = {
     "hedonic": {"dblp": {"max_memberships": 32, "absolute_resolution": 1 / 7},
                   "amazon": {"max_memberships": 4, "absolute_resolution": 1 / 723}},
 }
-PROFILES["paper-hoc"] = Config(networks=["dblp", "amazon"], methods=["hedonic"],
-                               nodes=0, seeds=list(range(10)), preset="screened", timeout=3600.0,
-                               order="seed,method,network", output_dir=str(RUNS_ROOT / "paper-hoc"), profile="paper-hoc",
-                               save_covers=True, robustness=True, method_params=HOC_TUNED)
+PROFILES["paper-hedonic"] = Config(networks=["dblp", "amazon"], methods=["hedonic"],
+                                   nodes=0, seeds=list(range(10)), preset="screened", timeout=3600.0,
+                                   order="seed,method,network", output_dir=str(RUNS_ROOT / "paper-hedonic"),
+                                   profile="paper-hedonic", save_covers=True, robustness=True,
+                                   method_params=HEDONIC_TUNED)
+RENAMED_PROFILES = {"paper-hoc": "paper-hedonic"}  # refused with the new name: the method is called hedonic
 
 
-HOC_METHODS = ("hedonic",)
+HEDONIC_METHODS = ("hedonic",)
+TUNED_NAME = "hedonic_tuned.json"  # the calibration file of `hedonic run calibrate`
+LEGACY_TUNED_NAMES = ("hoc_tuned.json",)  # what releases before the rename wrote; read (and kept) where it exists
+
+
+def tuned_file(path: str | Path) -> Path:
+    """The calibration file a ``--tuned`` path names: the path itself, or, when a ``hedonic_tuned.json`` is absent, the
+    file an earlier release wrote in its place (``hoc_tuned.json``), so a folder calibrated before the rename is read."""
+    file = expand_path(path)
+    if file.name == TUNED_NAME and not file.exists():
+        for name in LEGACY_TUNED_NAMES:
+            if (file.parent / name).is_file():
+                return file.parent / name
+    return file
 
 
 class TunedMissing(ValueError):
@@ -241,12 +276,12 @@ class TunedMissing(ValueError):
 def load_tuned_file(path: str | Path) -> dict:
     """The calibrated settings of ``hedonic run calibrate`` or ``calibrate-baselines``: {method: {network: params}}.
 
-    A HOC row is {max_memberships, absolute_resolution}; a baseline's row is the ``method_params`` the runner reads for it
+    A Hedonic row is {max_memberships, absolute_resolution}; a baseline's row is the ``method_params`` the runner reads for it
     (``baseline_tuned.json`` writes exactly those). Only a finished calibration is accepted, so a run never starts on half
     of a calibration. A missing or unfinished file raises :class:`TunedMissing`, which a queue treats as "not calibrated
     yet" rather than as an error.
     """
-    file = expand_path(path)
+    file = tuned_file(path)
     if not file.is_file():
         raise TunedMissing(f"no calibration file {file}; run `hedonic run calibrate` or `calibrate-baselines` first")
     try:
@@ -263,7 +298,7 @@ def load_tuned_file(path: str | Path) -> dict:
         if method not in BY_KEY:
             raise ValueError(f"{file}: unknown method {method!r}")
         for network, values in networks.items():
-            if method in HOC_METHODS:
+            if method in HEDONIC_METHODS:
                 out.setdefault(method, {})[network] = {"max_memberships": int(values["max_memberships"]),
                                                        "absolute_resolution": float(values["absolute_resolution"])}
             elif values:  # a baseline: the parameters the runner reads, as the calibration wrote them
@@ -290,7 +325,7 @@ def apply_tuned(cfg: "Config", path: str | Path | Sequence[str | Path]) -> None:
                 for network, values in nets.items():
                     merged.setdefault(method, {}).setdefault(network, {}).update(values)
     cfg.method_params = merged
-    cfg.tuned = ",".join(str(expand_path(file).resolve()) for file in files)
+    cfg.tuned = ",".join(str(tuned_file(file).resolve()) for file in files)
 
 
 # "paper-oracle": the supervised disjoint control of Chapter 6 on the paper's networks. The oracle is deterministic,
@@ -302,7 +337,7 @@ PROFILES["paper-oracle"] = Config(networks=["dblp", "amazon"], methods=["disjoin
 PROFILE_HELP = {"default": "DBLP, 5,000-vertex subgraph, seed 0, Hedonic + CoDeSEG (a minute)",
                 "paper": "paper reproduction: DBLP, Amazon (full graphs) x all 9 methods x seeds 0-9, "
                          "order seed -> method -> network (many hours)",
-                "paper-hoc": "the paper's Hedonic rows at their tuned per-network settings, DBLP and Amazon "
+                "paper-hedonic": "the paper's Hedonic rows at their tuned per-network settings, DBLP and Amazon "
                              "(full graphs), seeds 0-9, covers kept",
                 "paper-oracle": "supervised control: the best disjoint answer built from the ground truth, DBLP and "
                                 "Amazon (full graphs), deterministic (seed 0), cover kept and audited"}
@@ -375,6 +410,12 @@ def split_target(target: str) -> tuple[str, str | None]:
     return base, (snap.canonical_cover_variant(cover) if cover else None)
 
 
+def pair_key(target: str) -> str:
+    """One spelling of a target: ``dblp:top5k`` -> ``dblp:top5000``; a plain name stays as it is."""
+    base, cover = split_target(target)
+    return f"{base}:{cover}" if cover else base
+
+
 def parse_targets(value: str) -> list[str]:
     """Networks, each optionally with the ground-truth cover to score against: ``dblp,amazon:top5k``.
 
@@ -437,6 +478,12 @@ def build_parser() -> argparse.ArgumentParser:
                         "defaults ('paper' is accepted as an old spelling)")
     p.add_argument("--threads", type=int, default=None, help="threads for methods that support them (default: all cores)")
     p.add_argument("--timeout", type=float, default=None, help="per-run detection timeout in seconds (default 600)")
+    p.add_argument("--limit-seconds", type=float, default=None, metavar="S",
+                   help="a queue's time limit for one detector run: lowers --timeout without changing any record's "
+                        "identity; a run it stops is recorded as a timeout and reruns under a larger limit or none")
+    p.add_argument("--out-of-memory", default=None, metavar="METHOD@PAIR,...",
+                   help="units recorded as out of memory (status memory, the evidence cited) without loading the pair or "
+                        "running the method, e.g. clique_percolation@livejournal:top5000; not part of any record's identity")
     p.add_argument("--output-dir", default=None, help="where run records and the summary are saved (default ~/Databases/Hedonic/Overlap/exp; a durable run adds /NAME)")
     p.add_argument("--cache-dir", default=None, help="downloads and built runtimes (default ~/.cache/hedonic)")
     p.add_argument("--network-root", default=None, help="optional folder with local SNAP archives")
@@ -449,14 +496,17 @@ def build_parser() -> argparse.ArgumentParser:
                    help="loop nesting, outermost first, e.g. seed,method,network (default network,seed,method); "
                         "a config file sets it with its `order` key")
     p.add_argument("--save-covers", action="store_true", help="keep every detector cover next to its record")
+    p.add_argument("--shared-folder", action="store_true",
+                   help="--output-dir is the run's folder itself, shared by several runs (each with its own --name and "
+                        "--methods), instead of OUTPUT_DIR/NAME: a unit another run finished there is reused")
     p.add_argument("--isolate", action="store_true",
                    help="run each detector run in a fresh child process, so its record's peak RSS is its own")
     p.add_argument("--robustness", action=argparse.BooleanOptionalAction, default=None,
                    help="audit every saved cover for robustness (exact stable-vertex fraction over resolution) right "
                         "after its detector run, into OUTPUT_DIR/NAME/robustness; implies --save-covers, full graphs only")
     p.add_argument("--tuned", action="append", default=None, metavar="FILE[,FILE]",
-                   help="calibrated settings laid over the config's method_params: hoc_tuned.json of `hedonic run calibrate` "
-                        "(HOC rows) and baseline_tuned.json of `hedonic run calibrate-baselines` (the baselines); "
+                   help="calibrated settings laid over the config's method_params: hedonic_tuned.json of `hedonic run calibrate` "
+                        "(Hedonic rows) and baseline_tuned.json of `hedonic run calibrate-baselines` (the baselines); "
                         "repeat the flag or give a comma list, a later file overrides an earlier one")
     p.add_argument("--dry-run", action="store_true", help="print the run plan and estimated time, then exit")
     p.add_argument("--scan", action="store_true",
@@ -476,6 +526,8 @@ def load_config(name_or_path: str | None) -> Config:
     """A named profile, or a .json/.toml file holding Config fields (seeds may be '0-9')."""
     if not name_or_path:
         return Config(**{**PROFILES["default"].__dict__})
+    if name_or_path in RENAMED_PROFILES:
+        raise ValueError(f"config {name_or_path!r} is now called {RENAMED_PROFILES[name_or_path]!r}")
     if name_or_path in PROFILES:
         return Config(**{**PROFILES[name_or_path].__dict__, "networks": list(PROFILES[name_or_path].networks),
                          "methods": list(PROFILES[name_or_path].methods), "seeds": list(PROFILES[name_or_path].seeds),
@@ -578,6 +630,18 @@ def config_from_args(a: argparse.Namespace) -> Config:
             setattr(cfg, key, getattr(a, key))
     if not cfg.timeout > 0:
         raise ValueError("--timeout must be a positive number of seconds")
+    if a.limit_seconds is not None:
+        if not a.limit_seconds > 0:
+            raise ValueError("--limit-seconds must be a positive number of seconds")
+        cfg.limit = float(a.limit_seconds)
+    if a.out_of_memory is not None:
+        cfg.out_of_memory = a.out_of_memory
+    if cfg.out_of_memory:
+        declared = cfg.declared_out_of_memory()  # a misspelled item is refused here, before anything runs
+        stray = sorted({f"{m}@{n}" for m, n in declared if m not in cfg.methods or n not in {pair_key(t) for t in cfg.networks}})
+        if stray:
+            raise ValueError(f"--out-of-memory names unit(s) this run does not plan: {', '.join(stray)}")
+        cfg.out_of_memory = memwatch.spell_declared(declared)
     if cfg.preset == "paper":
         cfg.preset = "registry"
     if a.threads is not None:
@@ -592,6 +656,8 @@ def config_from_args(a: argparse.Namespace) -> Config:
         cfg.save_covers = True
     if a.isolate:
         cfg.isolate = True
+    if a.shared_folder:
+        cfg.shared_folder = True
     if a.robustness is not None:
         cfg.robustness = a.robustness
     if cfg.robustness:
@@ -764,7 +830,7 @@ def ensure_runtimes(methods: list[str], cache: Path, say) -> dict[str, str]:
     """Prepare external runtimes through `hedonic setup`; return {method: reason} for unavailable ones."""
     from hedonic.experiments.overlapping import codeseg_setup
 
-    manifest_path = cache / "setup_manifest.json"
+    manifest_path = codeseg_setup._manifest_default_path(cache)  # where setup writes it (HEDONIC_CODESEG_MANIFEST, else here)
 
     def statuses() -> dict:
         try:
@@ -776,12 +842,21 @@ def ensure_runtimes(methods: list[str], cache: Path, say) -> dict[str, str]:
     todo = [s for s in needed if (statuses().get(s) or {}).get("status") != "ready"]
     if todo:
         say(f"preparing runtimes: {', '.join(todo)} (first use only; this can take a few minutes)")
+        # ``cache`` is the runtime folder itself; setup's ``--cache-dir DIR`` would mean DIR/codeseg, so it is named
+        # through the environment, which setup takes as the folder (the manifest went to cache/codeseg/ before)
+        saved = os.environ.get("HEDONIC_CODESEG_CACHE")
+        os.environ["HEDONIC_CODESEG_CACHE"] = str(cache)
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
             try:
                 codeseg_setup.setup_main(["--datasets", "dblp", "--methods", ",".join(todo), "--build-native",
-                                          "--skip-data", "--cache-dir", str(cache)])
+                                          "--skip-data"])
             except SystemExit:
                 pass
+            finally:
+                if saved is None:
+                    os.environ.pop("HEDONIC_CODESEG_CACHE", None)
+                else:
+                    os.environ["HEDONIC_CODESEG_CACHE"] = saved
     status = statuses()
     missing = {}
     for m in methods:
@@ -808,7 +883,7 @@ def method_params(m: Method, cfg: Config, network: str) -> dict:
 
 # Detection times measured on full Amazon/YouTube in saved records (M1 Max; overnight queue and
 # snap-v4 baselines, 2026-09-26/27). They override the linear-in-edges extrapolation from full
-# DBLP, which underestimates super-linear methods (HOC-local: 1,484 s measured on YouTube vs
+# DBLP, which underestimates super-linear methods (Hedonic: 1,484 s measured on YouTube vs
 # ~115 s extrapolated). ANGEL on full YouTube ran for over an hour without finishing.
 MEASURED_FULL = {("hedonic", "amazon"): 355, ("disjoint_oracle", "amazon"): 40, ("hedonic", "youtube"): 1484,
                  ("codeseg", "amazon"): 4, ("codeseg", "youtube"): 8,
@@ -820,9 +895,14 @@ def expected_seconds(m: Method, cfg: Config, network: str) -> float:
     n, e = NETWORKS[network][1:]
     # whole-graph figures: the plan of a covered-induced run is smaller than this, so its estimate is an upper bound
     if not cfg.nodes and (m.key, split_target(network)[0]) in MEASURED_FULL:
-        return 2.0 + min(cfg.timeout, MEASURED_FULL[m.key, split_target(network)[0]])
+        return 2.0 + min(run_timeout(cfg), MEASURED_FULL[m.key, split_target(network)[0]])
     edges = e * min(1.0, cfg.nodes / n) if cfg.nodes else e
-    return 2.0 + min(cfg.timeout, m.seconds * edges / DBLP_EDGES)
+    return 2.0 + min(run_timeout(cfg), m.seconds * edges / DBLP_EDGES)
+
+
+def run_timeout(cfg: Config) -> float:
+    """The longest one detector run may take: the run's timeout, lowered by a queue's limit."""
+    return cfg.timeout if cfg.limit is None else min(cfg.timeout, cfg.limit)
 
 
 def graph_text(cfg: Config) -> str:
@@ -975,13 +1055,19 @@ def replication_text(cfg: Config) -> str:
     return f"deterministic, one run at seed {min(cfg.seeds)}: {', '.join(once)}"
 
 
+def run_folder(cfg: Config, name: str) -> Path:
+    """The folder a run named ``name`` writes into: OUTPUT_DIR/NAME, or OUTPUT_DIR itself when it already ends with the
+    name or the run shares it (``--shared-folder``)."""
+    folder = expand_path(cfg.output_dir)
+    return folder if cfg.shared_folder or str(cfg.output_dir).endswith(name) else folder / name
+
+
 def scan_command(cfg: Config, name: str | None) -> int:
     """``--scan``: print what the run's folder already holds for every unit of the plan. Reads only; seals nothing."""
     if not name:
         print(style("  --scan needs --name: a run's records live in OUTPUT_DIR/NAME", "yellow"))
         return 2
-    folder = expand_path(cfg.output_dir)
-    cfg.output_dir = str(folder if str(cfg.output_dir).endswith(name) else folder / name)
+    cfg.output_dir = str(run_folder(cfg, name))
     plan = build_plan(cfg, {})
     binary = codeseg_binary(codeseg_tools(cfg)) if "codeseg" in cfg.methods else None
     if binary is not None and not binary.is_file():
@@ -1075,7 +1161,7 @@ def _run_runner_quietly(argv: list[str]) -> None:
 # A record's config digest covers the runner's default parameters for every method, not only the method that ran.
 # The 1.0.0.6 runs were stamped with ego_splitting's default {"resolution": 1.0}, which the runner no longer
 # carries (ego_splitting is an opt-in extra method). It is passed again so the digests of those records still
-# reproduce; no HOC method reads it, so the detector and its results are unchanged.
+# reproduce; Hedonic does not read it, so the detector and its results are unchanged.
 DIGEST_DEFAULTS = {"ego_splitting": {"resolution": 1.0}}
 
 
@@ -1103,18 +1189,23 @@ def unit_argv(cfg: Config, net: str, seed: int, m: Method, binary: Path | None) 
         argv.append("--no-omega")
     if cfg.save_covers:
         argv.append("--save-covers")
+    if cfg.limit is not None:  # policy, not identity: the runner keeps it out of the config digest
+        argv += ["--limit-seconds", f"{cfg.limit:g}"]
+    declared = cfg.declared_out_of_memory().get((m.key, pair_key(net))) if cfg.out_of_memory else None
+    if declared is not None:  # policy too: the unit's record says out of memory, and nothing is loaded or run
+        argv += ["--memory-declared", declared]
     return argv, out
 
 
 def unit_digest(cfg: Config, net: str, seed: int, m: Method, binary: Path | None) -> str | None:
     """The config digest the runner would stamp on this unit's record now (its identity, with no detector work)."""
-    from hedonic.experiments.overlapping import codeseg_reproduction as cr, extra_methods
+    from hedonic.experiments.overlapping import codeseg_reproduction as cr, extra_methods, threadio
 
     extra_methods.install()  # the runner only knows ego_splitting and the controls once they are registered
     argv, _ = unit_argv(cfg, net, seed, m, binary)
     buffer = io.StringIO()
     try:
-        with contextlib.redirect_stdout(buffer), contextlib.redirect_stderr(io.StringIO()):
+        with threadio.redirected(stdout=buffer):  # the view certifies units on a thread of its own
             cr.main([*argv, "--identity-only"])
         return json.loads(buffer.getvalue().strip().splitlines()[-1]).get("config_digest")
     except (SystemExit, Exception):  # noqa: BLE001 - an identity that cannot be read is not reused; the runner decides
@@ -1136,7 +1227,7 @@ def unit_check(cfg: Config, net: str, seed: int, m: Method, binary: Path | None,
         if not ui.record_path(out, split_target(net)[0], m.runner).is_file():
             return ui.Check("missing", "no record")
         return ui.Check("stale", "the unit's identity could not be computed")
-    return (ui.adopt if adopt else ui.check)(out, split_target(net)[0], m.runner, digest, cfg.save_covers)
+    return (ui.adopt if adopt else ui.check)(out, split_target(net)[0], m.runner, digest, cfg.save_covers, cfg.limit)
 
 
 def unit_record(cfg: Config, net: str, seed: int, m: Method) -> dict:
@@ -1219,7 +1310,7 @@ def run_one(cfg: Config, net: str, seed: int, m: Method, binary: Path | None) ->
         rec = json.loads(path.read_text())
         from hedonic.experiments.overlapping import unit_integrity as ui
 
-        if rec.get("status") in ui.FINAL and ui.check(out, dataset, m.runner, None, cfg.save_covers).state in ("unsealed", "corrupt"):
+        if ui.final(rec, cfg.limit) and ui.check(out, dataset, m.runner, None, cfg.save_covers, cfg.limit).state in ("unsealed", "corrupt"):
             ui.seal(out, dataset, m.runner, by="run")  # certify the bytes the runner just wrote (a reused, sealed record keeps its seal)
     else:
         tail = [line for line in buffer.getvalue().strip().splitlines() if line.strip()]
@@ -1255,6 +1346,12 @@ def attach_robustness(stage, net: str, seed: int, m: Method, rec: dict) -> bool:
     return failed
 
 
+def status_text(status: str | None) -> str:
+    """A unit's status as the tables say it: ``memory`` (stopped by the memory watchdog, or declared) reads
+    "out of memory"."""
+    return "out of memory" if status == memwatch.MEMORY_STATUS else str(status)
+
+
 def result_line(tag: str, rec: dict) -> str:
     mm = rec.get("metrics") or {}
     if rec.get("status") == "completed":
@@ -1262,7 +1359,7 @@ def result_line(tag: str, rec: dict) -> str:
         if isinstance(rec.get("robustness"), (int, float)):
             note += f" · robust {rec['robustness']:.3f}"
         return f"  {style('✓', 'green')} {tag}  {style(note, 'dim')}"
-    why = f"{rec.get('status')}: {str(rec.get('reason'))[:110]}"
+    why = f"{status_text(rec.get('status'))}: {str(rec.get('reason'))[:110]}"
     return f"  {style('✗', 'red')} {tag}  {style(why, 'yellow')}"
 
 
@@ -1409,7 +1506,7 @@ def _render_tables(rows: list[dict], cfg: Config, show_sd: bool) -> str:
         out += [bar("┌", "┬", "┐"), row_line(headers), bar("├", "┼", "┤")]
         for r, cells in body:
             if cells is None:
-                note = f"{r['label']}  —  {r['status']}: {str(r['reason'] or '')}"[:inner]
+                note = f"{r['label']}  —  {status_text(r['status'])}: {str(r['reason'] or '')}"[:inner]
                 out.append("  │ " + style(note, "yellow") + " " * (inner - len(note)) + " │")
             else:
                 out.append(row_line(cells))

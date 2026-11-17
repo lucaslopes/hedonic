@@ -64,18 +64,22 @@ from typing import Any, Callable, Sequence
 import igraph as ig
 
 from hedonic.experiments.config import codeseg_cache_dir
-from hedonic.experiments.overlapping import replication
+from hedonic.experiments.overlapping import limits, memwatch, replication
 
 PROTOCOL = "baseline-calibration-v1"
 CRITERION = "heldout-pair-loglik-v1"
 HOLDOUT_FRACTION = 0.2
 HOLDOUT_MAX_PAIRS = 200_000  # positives plus negatives; keeps the scorer cheap on the large graphs
+DEFAULT_EVAL_TIMEOUT = 3600.0  # seconds one evaluation's detector run may take (``--eval-timeout-minutes`` 60)
 
 # Pre-registered grids (fixed before any calibration run; a change is a protocol change, record why).
 CLIQUE_SIZES = (3, 4, 5, 6)
 CLIQUE_GIANT_FRACTION = 0.5
 ANGEL_THRESHOLDS = (0.2, 0.33, 0.5, 0.66, 0.8)  # 0.33 and 0.66 are the authors' examples
 ANGEL_MIN_COMMUNITY_SIZE = 3
+# A method whose search rule changed: a search recorded under another version is searched again (its ledger, keyed by
+# setting, is reused). "descending-v2": ANGEL walks its grid from the largest phi down and stops at a timeout.
+SEARCH_VERSIONS = {"angel": "descending-v2"}
 K_FRACTIONS = (0.02, 0.005, 0.08, 0.01, 0.04, 0.002)  # K / n, in the order they are tried (centre first, then spread)
 K_FACTOR = 2.0  # one extension step when the best K sits on the edge of what was tried
 K_MAX_EXTEND = 2
@@ -116,7 +120,7 @@ class Budget:
     """Evaluations and single-core seconds a calibration may spend (None = no cap on that axis)."""
     max_evals: int | None = 8
     max_seconds: float | None = None
-    eval_timeout: float | None = 3600.0
+    eval_timeout: float | None = DEFAULT_EVAL_TIMEOUT
 
 
 @dataclass
@@ -294,6 +298,8 @@ def _child(runner, method, graph, params, seed, path):
     try:
         cover = runner(method, graph, params, seed)
         out: dict[str, Any] = {"status": "completed", "cover": cover}
+    except memwatch.MemoryLimitReached as exc:  # a program the runner started, stopped by its clock's watchdog
+        out = exc.fields()
     except BaseException as exc:  # noqa: BLE001 - recorded as a failed probe
         unavailable = type(exc).__name__ == "MethodUnavailable"
         out = {"status": "unavailable" if unavailable else "failed", "reason": f"{type(exc).__name__}: {exc}"[:500]}
@@ -304,38 +310,24 @@ def _child(runner, method, graph, params, seed, path):
 
 def _kill_tree(pid: int) -> None:
     """Kill a process and everything it started: an isolated CDlib worker (ANGEL, Ego-Splitting) is a grandchild of the
-    probe, and killing only the probe leaves it running for hours as an orphan."""
-    import signal
-    import subprocess
-
-    try:
-        rows = subprocess.run(["ps", "-A", "-o", "pid=,ppid="], capture_output=True, text=True, timeout=10).stdout.split("\n")
-    except (OSError, subprocess.SubprocessError):
-        rows = []
-    kids: dict[int, list[int]] = {}
-    for row in rows:
-        parts = row.split()
-        if len(parts) == 2 and all(x.isdigit() for x in parts):
-            kids.setdefault(int(parts[1]), []).append(int(parts[0]))
-    order, stack = [], [pid]
-    while stack:
-        cur = stack.pop()
-        order.append(cur)
-        stack.extend(kids.get(cur, []))
-    for one in reversed(order):
-        with contextlib.suppress(OSError):
-            os.kill(one, signal.SIGKILL)
+    probe, and killing only the probe leaves it running for hours as an orphan (``memwatch.kill_tree``)."""
+    memwatch.kill_tree(pid)
 
 
 def run_isolated(runner, method, graph, params, seed, timeout: float | None) -> dict[str, Any]:
-    """The detector in a forked child (its memory is freed on exit, a hang is killed at ``timeout``)."""
+    """The detector in a forked child (its memory is freed on exit, a hang is killed at ``timeout``).
+
+    While it runs, the machine's free memory is read every half second (``memwatch.join``): below the floor the child's
+    whole tree is killed and the evaluation is recorded as ``status: "memory"``, the way a timeout is."""
     fd, path = tempfile.mkstemp(suffix=".pkl")
     os.close(fd)
     proc = mp.get_context("fork").Process(target=_child, args=(runner, method, graph, params, seed, path))
     t0 = time.perf_counter()
     proc.start()
-    proc.join(timeout)
+    watch = memwatch.join(proc, timeout)
     try:
+        if watch.tripped is not None:
+            return {**watch.tripped, "detect_seconds": time.perf_counter() - t0}
         if proc.is_alive():
             _kill_tree(proc.pid)
             proc.kill()
@@ -349,6 +341,11 @@ def run_isolated(runner, method, graph, params, seed, timeout: float | None) -> 
     finally:
         with contextlib.suppress(OSError):
             os.unlink(path)
+
+
+def _memory_fields(out: dict[str, Any]) -> dict[str, Any]:
+    """What a ledger line keeps of a memory stop: the floor and the free memory seen (``memwatch.stopped``)."""
+    return {k: out[k] for k in ("memory_floor_percent", "free_memory_percent", "memory_declared") if k in out}
 
 
 def _ledger_path(ctx: Context, method: str) -> Path | None:
@@ -401,6 +398,9 @@ def _run_replica(ctx: Context, method: str, params: dict[str, Any], replica: int
     else:
         rec["reason"] = out.get("reason")
         rec["score_seconds"] = 0.0
+        rec.update(_memory_fields(out))
+        if out["status"] == "timeout" and b.eval_timeout:
+            rec["limit_seconds"] = float(b.eval_timeout)
     ctx.seconds += rec["detect_seconds"] + rec["score_seconds"]
     if path is not None:
         with path.open("a") as fh:
@@ -439,7 +439,8 @@ def evaluate(ctx: Context, method: str, params: dict[str, Any]) -> dict[str, Any
     fresh = False
     for replica in range(count):
         key = _key(ctx, method, params, replica)
-        if key in known:
+        # a run stopped at a timeout answers only under a timeout no larger than that one (one evaluation each)
+        if key in known and limits.stands(known[key], ctx.budget.eval_timeout, default=DEFAULT_EVAL_TIMEOUT):
             recs[replica] = known[key]
             continue
         if not fresh:
@@ -472,7 +473,7 @@ def evaluate(ctx: Context, method: str, params: dict[str, Any]) -> dict[str, Any
 @dataclass
 class CalibrationResult:
     method: str
-    status: str                       # "calibrated" | "fixed" | "unavailable" | "failed"
+    status: str                       # "calibrated" | "fixed" | "unavailable" | "failed" | "out_of_memory"
     params: dict[str, Any] | None     # a ready method_params table (None when nothing could be chosen)
     rule: str
     faithful_to_paper: bool | None    # True/False when the result is a claim about reproducing the authors; None = n/a
@@ -520,7 +521,9 @@ def _best(candidates: list[dict[str, Any]]) -> dict[str, Any] | None:
 
 def _all_failed(method: str, rule: str, cands: list[dict], stop: str) -> CalibrationResult:
     statuses = {c["status"] for c in cands}
-    status = "unavailable" if statuses == {"unavailable"} else "failed"
+    # every evaluation stopped for memory: "out_of_memory", which --transfer-missing never fills with another pair's setting
+    status = ("unavailable" if statuses == {"unavailable"} else
+              "out_of_memory" if statuses == {memwatch.MEMORY_STATUS} else "failed")
     reasons = sorted({str(c.get("reason")) for c in cands if c.get("reason")})
     return CalibrationResult(method, status, None, rule, None, criterion=CRITERION, candidates=cands, stop_reason=stop,
                              notes=reasons[:3] or ["no evaluation completed"])
@@ -609,6 +612,8 @@ def calibrate_clique_percolation(ctx: Context, *, ks: Sequence[int] = CLIQUE_SIZ
         path = _ledger_path(ctx, "clique_percolation")
         key = _key(ctx, "clique_percolation", {**params, "split": "whole"})
         rec = _read_ledger(path).get(key)
+        if memwatch.is_memory(rec) and not limits.stands(rec, ctx.budget.eval_timeout):
+            rec = None  # a lower floor, or --rerun-memory: evaluated again
         if rec is None:
             out = run_isolated(runner, "clique_percolation", ctx.graph,
                                {**ctx.runtime.get("clique_percolation", {}), **params,
@@ -622,12 +627,17 @@ def calibrate_clique_percolation(ctx: Context, *, ks: Sequence[int] = CLIQUE_SIZ
                 rec["score"] = -rec["summary"]["largest_fraction_of_covered"]  # reported as a curve, not maximised
             else:
                 rec["reason"] = out.get("reason")
+                rec.update(_memory_fields(out))
             ctx.evaluations += 1
             ctx.seconds += rec["detect_seconds"]
             if path is not None:
                 with path.open("a") as fh:
                     fh.write(json.dumps(rec, default=str) + "\n")
         cands.append(_candidate(rec))
+        if memwatch.is_memory(rec):  # a larger k enumerates the same maximal cliques (keeping those of at least k
+            # vertices), so it meets the same wall: on LiveJournal/top5000 k = 3, 4 and 5 were all killed for memory
+            stop = f"out of memory at k {k}: larger k not tried"
+            break
         if rec["status"] == "completed" and chosen is None and rec["summary"]["largest_fraction_of_covered"] < giant_fraction:
             chosen = k
             break  # larger k only fragments further; the transition is bracketed from above
@@ -657,28 +667,41 @@ def calibrate_angel(ctx: Context, *, thresholds: Sequence[float] = ANGEL_THRESHO
 
     The authors give no universal value (0.33 and 0.66 are illustrations; larger phi merges less). The runner's
     ``threshold = 0.6`` is the benchmark's earlier choice, not an authors' recommendation. The grid is the same for every
-    cover; ``min_community_size`` is fixed at the runner's 3."""
+    cover; ``min_community_size`` is fixed at the runner's 3.
+
+    The grid is walked from the largest phi down: a smaller phi merges more and costs more (on DBLP/top5000, 27 s at 0.6
+    and more than an hour at 0.2), so the cheap settings are scored first, and a setting stopped at the evaluation timeout
+    ends the walk (the smaller ones are not tried)."""
     before = (ctx.evaluations, ctx.seconds)
-    rule = (f"phi in {list(thresholds)} (pre-registered), maximum held-out pair likelihood on G[S]; "
-            f"min_community_size fixed at {min_community_size}; ties go to the first (smaller) phi")
+    rule = (f"phi in {list(thresholds)} (pre-registered), tried from the largest down, the walk ending at the first "
+            f"setting stopped at the evaluation timeout; maximum held-out pair likelihood on G[S]; "
+            f"min_community_size fixed at {min_community_size}; ties go to the smaller phi")
     cands, stop = [], "complete"
     try:
-        for phi in thresholds:
+        for phi in sorted(thresholds, reverse=True):
             cands.append(_candidate(evaluate(ctx, "angel", {"threshold": float(phi),
                                                             "min_community_size": int(min_community_size)})))
             if cands[-1]["status"] == "unavailable":
                 stop = "runtime unavailable"
                 break
+            if cands[-1]["status"] == "timeout":
+                stop = f"timeout at phi {phi:g}: smaller phi not tried"
+                break
     except BudgetExhausted as exc:
         stop = f"budget ({exc})"
-    best = _best(cands)
-    if best is None:
-        return _finish(ctx, before, _all_failed("angel", rule, cands, stop))
     ordered = [c for c in cands if c["status"] == "completed"]
+    if not ordered:
+        return _finish(ctx, before, _all_failed("angel", rule, cands, stop))
+    best = max(ordered, key=lambda c: (c["score"], -c["params"]["threshold"]))
     phis = [c["params"]["threshold"] for c in ordered]
     bracketed = (min(phis) < best["params"]["threshold"] < max(phis)) if len(phis) >= 3 else None
-    notes = ["the optimum is on the edge of the grid; phi is bounded in (0, 1), extend the grid only with a recorded reason"] \
-        if bracketed is False else []
+    notes = []
+    if bracketed is False and stop.startswith("timeout") and best["params"]["threshold"] == min(phis):
+        notes.append(f"the optimum is the smallest phi that finished; the next one down did not finish within the "
+                     f"evaluation timeout ({stop})")
+    elif bracketed is False:
+        notes.append("the optimum is on the edge of the grid; phi is bounded in (0, 1), extend the grid only with a "
+                     "recorded reason")
     return _finish(ctx, before, CalibrationResult(
         "angel", "calibrated", dict(best["params"]), rule, None, criterion=CRITERION, candidates=cands,
         stop_reason=stop, bracketed=bracketed, notes=notes))

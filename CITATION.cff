@@ -1,0 +1,31 @@
+cff-version: 1.2.0
+message: "If you use Hedonic, please cite the software and the associated article."
+type: software
+title: "Hedonic"
+version: "2.1.0"
+authors:
+  - family-names: "Felipe"
+    given-names: "Lucas Lopes"
+repository-code: "https://github.com/lucaslopes/hedonic"
+url: "https://github.com/lucaslopes/hedonic"
+license: "GPL-3.0-or-later"
+keywords:
+  - community detection
+  - hedonic games
+  - graph clustering
+  - overlapping communities
+preferred-citation:
+  type: article
+  authors:
+    - family-names: "Felipe"
+      given-names: "Lucas Lopes"
+    - family-names: "Avrachenkov"
+      given-names: "Konstantin"
+    - family-names: "Menasché"
+      given-names: "Daniel Sadoc"
+  title: "From Leiden to Pleasure Island: The Constant Potts Model for community detection as a hedonic game"
+  journal: "Physica A: Statistical Mechanics and its Applications"
+  volume: 680
+  pages: "130989"
+  year: 2025
+  doi: "10.1016/j.physa.2025.130989"

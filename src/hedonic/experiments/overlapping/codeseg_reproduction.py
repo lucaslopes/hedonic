@@ -41,6 +41,7 @@ metrics ledger.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import csv
 import hashlib
 import json
@@ -62,6 +63,9 @@ from hedonic.experiments import runtime
 from hedonic.experiments.config import NETWORKS_DIR, OVERLAPPING_ARTIFACTS_DIR, expand_path
 from hedonic.experiments.leiden import seeded_igraph_rng
 from hedonic.experiments import timing
+from hedonic.experiments.overlapping import limits
+from hedonic.experiments.overlapping import cover_store
+from hedonic.experiments.overlapping import memwatch
 from hedonic.experiments.overlapping.cdlib_env import (
     MethodUnavailable,
     run_slpa,
@@ -113,6 +117,9 @@ HEDONIC_REFERENCE_FREE_MAX_MEMBERSHIPS = 8
 # per-vertex multiplicity of the scored reference cover.  Such rows are
 # reference-informed ablations and are labelled by ``max_memberships_source``.
 HEDONIC_REFERENCE_MULTIPLICITY_CAP = "reference-multiplicity"
+# ``max_memberships = -1``: no cap (the detector's cap is the vertex count). The record carries the vertex count and
+# ``max_memberships_source = "unlimited"``.
+UNLIMITED_CAP = -1
 DATASETS: tuple[str, ...] = (
     "amazon",
     "youtube",
@@ -267,7 +274,7 @@ METHOD_SPECS: dict[str, MethodSpec] = {
     "hedonic_local": MethodSpec(
         "hedonic_local",
         "hedonic game / local-moving overlap",
-        "hedonic.Game.community_hedonic (hedonic C core)",
+        "hedonic.Game.community_hedonic (hedonic native core)",
         "undirected, unweighted graph with edge-density resolution",
         {"resolution": "graph.density()", "phase": "local moving to an equilibrium"},
     ),
@@ -511,6 +518,47 @@ def _cover_for_paper_metrics(dataset: SnapDataset) -> tuple[list[list[int]], set
     }
 
 
+def score_cover(
+    cover: Sequence[Sequence[int]],
+    dataset: SnapDataset,
+    ground_truth: list[list[int]],
+    gt_nodes: set[int],
+    *,
+    paper_filter: bool,
+    compute_omega: bool,
+    omega_sample_size: int,
+    seed: int,
+    **options: Any,
+) -> tuple[dict[str, Any], list[list[int]], list[list[int]]]:
+    """Score a detector's cover as a benchmark record does: the metric vector, the scored prediction and reference.
+
+    ``ground_truth`` and ``gt_nodes`` are ``_cover_for_paper_metrics(dataset)``. Under the paper filter the prediction
+    is restricted to the reference's vertices and scored against the filtered reference; otherwise both are scored
+    whole. ``options`` go to ``evaluate_cover`` (``singleton_mode``, ``matching_weight``). The rescoring of saved
+    covers (``cover_rescore``) calls this with a record's own settings, so it reproduces the record's metrics.
+    """
+    n_vertices = dataset.graph.vcount()
+    scored_prediction = (
+        _filter_prediction(cover, gt_nodes=gt_nodes, n_vertices=n_vertices)
+        if paper_filter
+        else canonicalize_cover(cover, n_vertices=n_vertices, minimum_size=1)[0]
+    )
+    scored_ground_truth = ground_truth if paper_filter else dataset.cover
+    accuracy = evaluate_cover(
+        scored_prediction,
+        scored_ground_truth,
+        n_vertices,
+        compute_omega=compute_omega,
+        omega_sample_size=omega_sample_size,
+        omega_seed=seed,
+        **options,
+    )
+    f1 = float(accuracy["f1"])
+    onmi = overlapping_normalized_mutual_information_lfk(scored_prediction, scored_ground_truth)
+    accuracy.update({"onmi": float(onmi), "onmi_percent": 100.0 * float(onmi), "f1_percent": 100.0 * f1})
+    return accuracy, scored_prediction, scored_ground_truth
+
+
 def _filter_prediction(
     cover: Sequence[Sequence[int]],
     *,
@@ -699,8 +747,10 @@ def _hedonic_adapter_cap(
         )
         return max(2, int(multiplicity)), "reference_max_multiplicity_ablation"
     cap = int(requested)
+    if cap == UNLIMITED_CAP:  # no cap: every vertex may join as many communities as it likes (cap = vertex count)
+        return max(2, int(n_vertices)), "unlimited"
     if cap < 2:
-        raise ValueError("Hedonic overlapping adapters require max_memberships >= 2")
+        raise ValueError("Hedonic overlapping adapters require max_memberships >= 2, or -1 (unlimited)")
     return cap, "user_specified"
 
 
@@ -1888,7 +1938,8 @@ def _load_dataset(
 def _cover_on_disk(record: dict[str, Any], output_dir: Path) -> bool:
     """A completed record reused under --save-covers still needs its cover; without it the detector runs again."""
     relative = record.get("cover_path")
-    return bool(relative) and (output_dir / str(relative)).is_file()
+    labels = cover_store.labels_path(record)
+    return bool(relative) and (output_dir / str(relative)).is_file() and (not labels or (output_dir / labels).is_file())
 
 
 def _run_dataset(
@@ -1905,9 +1956,28 @@ def _run_dataset(
     compute_omega: bool = True,
     omega_sample_size: int = 100_000,
     save_covers: bool = False,
+    limit_seconds: float | None = None,
+    network_root: Path | None = None,
 ) -> list[dict[str, Any]]:
     ground_truth, gt_nodes, gt_report = _cover_for_paper_metrics(dataset)
     records: list[dict[str, Any]] = []
+    known: dict[str, Any] = {}
+
+    def answer_report() -> dict[str, Any]:
+        """The dataset report a record keeps: with the graph's SHA-256 and, under --save-covers, its vertex id map
+        (both taken once, when the first method of this dataset runs, outside every unit's clock)."""
+        if "report" not in known:
+            graph_sha = cover_store.graph_sha256(dataset.graph)
+            ids = None
+            if save_covers:
+                ids = str(cover_store.write_vertex_ids(output_dir, dataset, graph_sha, network_root).relative_to(output_dir))
+            known["report"] = cover_store.record_report(dataset.report, graph_sha, ids)
+        return known["report"]
+
+    # A queue's time limit (``--limit-seconds``) lowers the per-run timeout of this one detector run; it is not part of
+    # the config digest. It binds only when it is below the run's own timeout, and a run it stops is a ``timeout``.
+    run_timeout = limits.effective(timeout_seconds, limit_seconds)
+    binding = limit_seconds is not None and run_timeout == limit_seconds and run_timeout != timeout_seconds
     for name in methods:
         run_path = output_dir / "runs" / dataset.name / f"{name}.json"
         if resume and run_path.is_file():
@@ -1918,7 +1988,9 @@ def _run_dataset(
             if (
                 isinstance(cached, dict)
                 and cached.get("config_digest") == config_digest
-                and cached.get("status") in {"completed", "unavailable", "failed"}
+                and (cached.get("status") in {"completed", "unavailable", "failed"}
+                     or (cached.get("status") in (limits.TIMEOUT_STATUS, limits.MEMORY_STATUS)
+                         and limits.stands(cached, limit_seconds)))
                 and (not save_covers or cached.get("status") != "completed" or _cover_on_disk(cached, output_dir))
             ):
                 records.append(cached)
@@ -1926,8 +1998,9 @@ def _run_dataset(
                 continue
         parameters = dict(method_parameters.get(name, {}))
         parameters["dataset"] = dataset.name
-        if timeout_seconds is not None:
-            parameters["timeout_seconds"] = float(timeout_seconds)
+        if run_timeout is not None:
+            parameters["timeout_seconds"] = float(run_timeout)
+        report = answer_report()  # before the unit's clock: hashing the graph is the dataset's, not the unit's
         unit_started = time.perf_counter()  # the whole unit, scoring and saving included: ``unit_seconds``
         record: dict[str, Any] = {
             "protocol_version": PROTOCOL_VERSION,
@@ -1938,16 +2011,21 @@ def _run_dataset(
             "status": "running",
             "timing_scope": timing.TIMING_SCOPE,
             "runtime_versions": runtime.runtime_versions(),
-            "dataset_report": dataset.report,
+            "dataset_report": report,
             "ground_truth_report": gt_report,
             "method_spec": METHOD_SPECS[name].__dict__,
             "paper_filter_enabled": bool(paper_filter),
         }
         clock: timing.DetectorClock | None = None
+        watch: memwatch.Watch | None = None
         try:
             # The detector clock runs inside the adapters (``timing``), around the detector's own computation only.
             # Everything below it (validation, canonicalisation, scoring, saving the cover) comes after it stopped.
-            with timing.detector_run() as clock:
+            # The memory watchdog (``memwatch``) stops this run alone below the free-memory floor: from a thread of
+            # this process for a program the clock runs, from a profiling-timer signal for a detector in this process.
+            in_process = name in HEDONIC_IN_PROCESS or name in IGRAPH_IN_PROCESS
+            with timing.detector_run() as clock, limits.wall_clock(limit_seconds if binding and in_process else None), \
+                    (memwatch.in_process() if in_process else contextlib.nullcontext()) as watch:
                 cover, detector_metadata = _run_method(
                     name, dataset.graph, ground_truth, int(seed), parameters
                 )
@@ -1955,40 +2033,12 @@ def _run_dataset(
                 raise RuntimeError(f"{name}: the detector never started the detector clock (see timing.py)")
             _stamp_detector_clock(record, clock)
             scoring_started = time.perf_counter()
-            scored_prediction = (
-                _filter_prediction(cover, gt_nodes=gt_nodes, n_vertices=dataset.graph.vcount())
-                if paper_filter
-                else canonicalize_cover(cover, n_vertices=dataset.graph.vcount(), minimum_size=1)[0]
-            )
-            scored_ground_truth = ground_truth if paper_filter else dataset.cover
-            accuracy = evaluate_cover(
-                scored_prediction,
-                scored_ground_truth,
-                dataset.graph.vcount(),
-                compute_omega=compute_omega,
-                omega_sample_size=omega_sample_size,
-                omega_seed=seed,
-            )
-            f1 = float(accuracy["f1"])
-            onmi = overlapping_normalized_mutual_information_lfk(
-                scored_prediction, scored_ground_truth
-            )
-            accuracy.update(
-                {
-                    "onmi": float(onmi),
-                    "onmi_percent": 100.0 * float(onmi),
-                    "f1_percent": 100.0 * float(f1),
-                }
-            )
+            accuracy, scored_prediction, scored_ground_truth = score_cover(
+                cover, dataset, ground_truth, gt_nodes, paper_filter=paper_filter, compute_omega=compute_omega,
+                omega_sample_size=omega_sample_size, seed=seed)
             record["scoring_seconds"] = time.perf_counter() - scoring_started
-            if save_covers:  # the detector's cover (analysis-graph vertex ids), for later rescoring
-                cover_path = output_dir / "covers" / dataset.name / f"{name}.json.gz"
-                cover_path.parent.mkdir(parents=True, exist_ok=True)
-                import gzip
-
-                with gzip.open(cover_path, "wt", encoding="utf-8") as handle:
-                    json.dump([sorted(int(v) for v in c) for c in cover], handle)
-                record["cover_path"] = str(cover_path.relative_to(output_dir))
+            if save_covers:  # the detector's answer (analysis-graph vertex ids), to audit and rescore it later
+                record["cover_path"] = cover_store.save_answer(output_dir, dataset.name, name, cover, detector_metadata)
             record.update(
                 {
                     "status": "completed",
@@ -1999,6 +2049,10 @@ def _run_dataset(
                     "scored_ground_truth_node_count": len(gt_nodes),
                 }
             )
+        except limits.RunLimitReached as exc:  # the in-process detector, interrupted at the queue's limit
+            record.update(limits.timed_out(exc.seconds))
+        except memwatch.MemoryLimitReached as exc:  # the free-memory floor: this run alone was stopped
+            record.update(exc.fields())
         except MethodUnavailable as exc:
             reason = str(exc)
             lowered_reason = reason.lower()
@@ -2018,6 +2072,9 @@ def _run_dataset(
                     "reason": reason,
                 }
             )
+            if binding and "timed out" in lowered_reason:  # the program outlived the queue's limit, not its own timeout
+                record.update(limits.timed_out(float(limit_seconds)), reason=f"{reason} (the queue's limit of "
+                              f"{limits.fmt(limit_seconds)} for one run)")
         except Exception as exc:  # preserve the failure in the resumable ledger
             record.update(
                 {
@@ -2025,6 +2082,9 @@ def _run_dataset(
                     "reason": f"{type(exc).__name__}: {exc}",
                 }
             )
+        stop = (clock.memory_stop if clock is not None else None) or (watch.tripped if watch is not None else None)
+        if stop is not None and record["status"] != memwatch.MEMORY_STATUS:  # an adapter wrapped the stop in its own error
+            record.update(stop)
         if clock is not None and "resources" not in record:  # the detector raised: keep what it had run for
             _stamp_detector_clock(record, clock)
         record["unit_seconds"] = time.perf_counter() - unit_started
@@ -2040,6 +2100,39 @@ def _run_dataset(
             metric_text = " " + json.dumps(record["metrics"], sort_keys=True)
         print(f"[{status}] {dataset.name}/{name}{metric_text}")
     return records
+
+
+def _declare_out_of_memory(datasets: Sequence[str], methods: Sequence[str], seed: int, output_dir: Path,
+                           config_digest: str, reason: str, *, resume: bool, paper_filter: bool) -> None:
+    """The record of each unit declared out of memory (``--memory-declared``), written as a run's record is, without
+    loading the graph or starting a detector: ``status: "memory"``, ``memory_declared``, and the reason cited."""
+    for dataset in datasets:
+        for name in methods:
+            run_path = output_dir / "runs" / dataset / f"{name}.json"
+            if resume and run_path.is_file():
+                try:
+                    cached = json.loads(run_path.read_text(encoding="utf-8"))
+                except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+                    cached = None
+                if isinstance(cached, dict) and cached.get("config_digest") == config_digest \
+                        and cached.get("memory_declared") and limits.stands(cached, None):
+                    print(f"[resume] {dataset}/{name}: {cached.get('status')}")
+                    continue
+            record = {
+                "protocol_version": PROTOCOL_VERSION,
+                "config_digest": config_digest,
+                "dataset": dataset,
+                "method": name,
+                "seed": int(seed),
+                "timing_scope": timing.TIMING_SCOPE,
+                "runtime_versions": runtime.runtime_versions(),
+                "method_spec": METHOD_SPECS[name].__dict__,
+                "paper_filter_enabled": bool(paper_filter),
+                "unit_seconds": 0.0,
+                **memwatch.declared(reason),
+            }
+            _atomic_json(run_path, record)
+            print(f"[{record['status']}] {dataset}/{name}: {record['reason']}")
 
 
 def _write_csv(path: Path, records: Sequence[dict[str, Any]]) -> None:
@@ -2213,6 +2306,12 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--max-nodes", type=int, default=None, help="GT-informed induced-subgraph bound for local tests")
     parser.add_argument("--timeout", type=float, default=None, help="per-detector wall-clock timeout in seconds")
+    parser.add_argument("--limit-seconds", type=float, default=None,
+                        help="a queue's time limit for one detector run: lowers --timeout for this run without changing "
+                             "the record's identity; a run it stops is recorded as a timeout and reruns under a larger limit")
+    parser.add_argument("--memory-declared", metavar="REASON", default=None,
+                        help="record every unit of this run as out of memory (status memory) without loading the data or "
+                             "running a detector, citing REASON; policy, not part of the record's identity")
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--preflight", action="store_true", help="load/report data and dependencies without running detectors")
     parser.add_argument(
@@ -2323,8 +2422,8 @@ def _method_parameters(
                 "--hedonic-max-memberships must be an integer >= 2 or "
                 f"{HEDONIC_REFERENCE_MULTIPLICITY_CAP!r}"
             ) from exc
-        if cap_value < 2:
-            raise ValueError("--hedonic-max-memberships must be >= 2")
+        if cap_value < 2 and cap_value != UNLIMITED_CAP:
+            raise ValueError("--hedonic-max-memberships must be >= 2, or -1 (unlimited)")
         hedonic_cap = {"max_memberships": cap_value}
 
     return {
@@ -2460,6 +2559,8 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--max-nodes must be positive")
     if args.timeout is not None and args.timeout <= 0:
         parser.error("--timeout must be positive")
+    if args.limit_seconds is not None and args.limit_seconds <= 0:
+        parser.error("--limit-seconds must be positive")
     if args.smoke_nodes < 6:
         parser.error("--smoke-nodes must be at least 6")
     if args.omega_sample_size <= 0:
@@ -2570,6 +2671,10 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps({"config_digest": config_digest, "protocol_version": PROTOCOL_VERSION,
                           "identity": identity_payload(config_payload), "config": config_payload}, default=str))
         return 0
+    if args.memory_declared:  # declared out of memory: the record says so, nothing is loaded or run
+        _declare_out_of_memory(datasets, methods, int(args.seed), output_dir, config_digest, args.memory_declared,
+                               resume=bool(args.resume), paper_filter=bool(args.paper_filter))
+        return 0
     preflight = {
         "protocol_version": PROTOCOL_VERSION,
         "timing": {"scope": timing.TIMING_SCOPE, "rule": timing.TIMING_RULE},
@@ -2635,6 +2740,8 @@ def main(argv: list[str] | None = None) -> int:
                 compute_omega=bool(args.compute_omega),
                 omega_sample_size=int(args.omega_sample_size),
                 save_covers=bool(args.save_covers),
+                limit_seconds=args.limit_seconds,
+                network_root=network_root,
             )
         )
     manifest = {

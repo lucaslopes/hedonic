@@ -1,12 +1,14 @@
 """Is a benchmark unit's record really there, intact and finished? Hash-certified, with no detector work.
 
 A benchmark unit (network, seed, method) leaves a record ``runs/<net>/<runner>.json`` and, under ``--save-covers``,
-a cover ``covers/<net>/<runner>.json.gz``. Beside ``runs/`` sits a seal, ``integrity/<net>/<runner>.json``: the SHA-256 of the record's bytes and of the cover's bytes, taken when the unit finished. A unit is certified when
+a cover ``covers/<net>/<runner>.json.gz`` (and, for Hedonic, its labelled rows ``covers/<net>/<runner>.labels.json.gz``:
+``cover_store``). Beside ``runs/`` sits a seal, ``integrity/<net>/<runner>.json``: the SHA-256 of the record's bytes and of
+the cover's (and labels') bytes, taken when the unit finished. A unit is certified when
 
-* the record parses and has a final status (completed, unavailable or failed),
+* the record parses and has a final status (completed, unavailable or failed; timeout and memory while they stand),
 * its ``config_digest`` is the one the runner would stamp now (the same settings),
-* the cover it names exists, and
-* the bytes of record and cover are the sealed ones.
+* the cover (and labels file) it names exists, and
+* the bytes of record, cover and labels are the sealed ones.
 
 States (``Check.state``):
 
@@ -33,6 +35,16 @@ from pathlib import Path
 SEAL_DIR = "integrity"
 SCHEMA = 1
 FINAL = ("completed", "unavailable", "failed")
+TIMEOUT = "timeout"  # a run a queue's time limit stopped (``limits``): final only under a limit no larger than that one
+MEMORY = "memory"  # a run the memory watchdog stopped, or declared out of memory (``memwatch``): final while it stands
+
+
+def final(record: dict, limit: float | None = None) -> bool:
+    """Is this record the unit's answer for a run under the queue's per-run ``limit`` (None: no limit)?"""
+    from hedonic.experiments.overlapping import limits
+
+    status = record.get("status")
+    return status in FINAL or (status in (TIMEOUT, MEMORY) and limits.stands(record, limit))
 OK_STATES = ("verified", "unsealed")
 
 
@@ -77,15 +89,17 @@ def read_seal(out: Path, network: str, runner: str) -> dict | None:
     return seal if isinstance(seal, dict) else None
 
 
-def check(out: Path, network: str, runner: str, digest: str | None, save_covers: bool) -> Check:
-    """Certify one unit from the files on disk. ``digest`` is the config digest the runner would stamp now."""
+def check(out: Path, network: str, runner: str, digest: str | None, save_covers: bool,
+          limit: float | None = None) -> Check:
+    """Certify one unit from the files on disk. ``digest`` is the config digest the runner would stamp now; ``limit``
+    the queue's per-run time limit, under which a run that limit (or a smaller one) stopped is final."""
     path = record_path(out, network, runner)
     if not path.is_file():
         return Check("missing", "no record")
     record = _read_json(path)
     if not isinstance(record, dict):
         return Check("corrupt", "the record is not readable JSON")
-    if record.get("status") not in FINAL:
+    if not final(record, limit):
         return Check("missing", f"the record is {record.get('status')!r}, not final")
     if digest is not None and record.get("config_digest") != digest:
         return Check("stale", "the record was made with other settings", record)
@@ -96,6 +110,9 @@ def check(out: Path, network: str, runner: str, digest: str | None, save_covers:
         cover = out / str(record["cover_path"])
         if not cover.is_file():
             return Check("missing", "its cover is missing", record)
+    labels = _labels(out, record) if save_covers else None
+    if labels is not None and not labels.is_file():
+        return Check("missing", "its labelled memberships file is missing", record)
     seal_file = seal_path(out, network, runner)
     if not seal_file.is_file():
         return Check("unsealed", "no seal yet", record)
@@ -106,7 +123,15 @@ def check(out: Path, network: str, runner: str, digest: str | None, save_covers:
         return Check("corrupt", "the record's hash differs from its seal", record)
     if cover is not None and seal.get("cover_sha256") != sha256_file(cover):
         return Check("corrupt", "the cover's hash differs from its seal", record)
+    if labels is not None and seal.get("labels_sha256") != sha256_file(labels):
+        return Check("corrupt", "the labelled memberships' hash differs from their seal", record)
     return Check("verified", "hashes match the seal", record)
+
+
+def _labels(out: Path, record: dict) -> Path | None:
+    """The labelled memberships file a completed record names (``detector.final_memberships_path``), or None."""
+    path = (record.get("detector") or {}).get("final_memberships_path") if record.get("status") == "completed" else None
+    return out / str(path) if path else None
 
 
 def _cover_readable(cover: Path) -> bool:
@@ -127,6 +152,10 @@ def seal(out: Path, network: str, runner: str, *, by: str) -> dict:
     if record.get("status") == "completed" and record.get("cover_path") and (out / str(record["cover_path"])).is_file():
         cover = out / str(record["cover_path"])
         body.update(cover_path=str(record["cover_path"]), cover_sha256=sha256_file(cover), cover_bytes=cover.stat().st_size)
+    labels = _labels(out, record)
+    if labels is not None and labels.is_file():
+        body.update(labels_path=str(labels.relative_to(out)), labels_sha256=sha256_file(labels),
+                    labels_bytes=labels.stat().st_size)
     target = seal_path(out, network, runner)
     target.parent.mkdir(parents=True, exist_ok=True)
     tmp = target.with_name(target.name + f".tmp{os.getpid()}")
@@ -135,14 +164,18 @@ def seal(out: Path, network: str, runner: str, *, by: str) -> dict:
     return body
 
 
-def adopt(out: Path, network: str, runner: str, digest: str | None, save_covers: bool) -> Check:
+def adopt(out: Path, network: str, runner: str, digest: str | None, save_covers: bool,
+          limit: float | None = None) -> Check:
     """``check``, and seal a valid unsealed unit after reading its cover through (its bytes are trusted from now on)."""
-    result = check(out, network, runner, digest, save_covers)
+    result = check(out, network, runner, digest, save_covers, limit)
     if result.state != "unsealed":
         return result
     record = result.record or {}
     if save_covers and record.get("status") == "completed" and not _cover_readable(out / str(record["cover_path"])):
         return Check("corrupt", "its cover is not a readable gzip of a JSON list", record)
+    labels = _labels(out, record) if save_covers else None
+    if labels is not None and not _cover_readable(labels):
+        return Check("corrupt", "its labelled memberships are not a readable gzip of a JSON list", record)
     seal(out, network, runner, by="adopted")
     return Check("verified", "valid; sealed now", record)
 
@@ -156,6 +189,8 @@ def quarantine(out: Path, network: str, runner: str, reason: str) -> list[str]:
     targets = [path, seal_path(out, network, runner)]
     if record.get("cover_path"):
         targets.append(out / str(record["cover_path"]))
+    if _labels(out, record) is not None:
+        targets.append(_labels(out, record))
     for target in targets:
         if target.is_file():
             new = target.with_name(f"{target.name}.corrupt-{stamp}")
