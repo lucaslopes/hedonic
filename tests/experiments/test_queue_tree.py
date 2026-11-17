@@ -205,7 +205,7 @@ class TestBuilders(unittest.TestCase):
     # ---- the benchmark: a unit's time includes its audit, and a unit past its estimate has no ETA
     NOW = 1_000_000.0
 
-    def _benchmark(self, plan, finished_labels=(), seeds=(0, 1, 2)):
+    def _benchmark(self, plan, finished_labels=(), seeds=(0, 1, 2), history=None):
         from types import SimpleNamespace
 
         methods = {label: SimpleNamespace(label=label, key=label.lower()) for label in ("Hedonic", "BigCLAM")}
@@ -213,7 +213,7 @@ class TestBuilders(unittest.TestCase):
         finished = [(label, seed) in finished_labels for label in methods for seed in seeds]
         cfg = SimpleNamespace(robustness=True, order="seed,network,method")
         with patch.object(qb.qs, "expected_seconds", lambda m, c, n: {"Hedonic": 100.0, "BigCLAM": 1658.0}[m.label]):
-            return qb.benchmark(cfg, units, finished, {"plan": plan}, now=self.NOW).families[0]
+            return qb.benchmark(cfg, units, finished, {"plan": plan}, now=self.NOW, history=history).families[0]
 
     def _row(self, label, seed, status, **fields):
         return {"network": "youtube:top5000", "label": label, "seed": seed, "status": status, **fields}
@@ -288,6 +288,53 @@ class TestBuilders(unittest.TestCase):
         (seconds, basis), unit = self._cost(self._benchmark(plan), "BigCLAM", 0)
         self.assertEqual((seconds, basis), (None, ""))  # the audit or its worker is gone: back to "no ETA"
         self.assertIn("unknown", unit.note)
+
+    # ---- a finished unit took its whole span, and a running one has every audit profile still to come
+    def test_a_finished_unit_took_its_audits_too_not_its_detection_alone(self):
+        plan = [self._row("Hedonic", 0, "completed", seconds=6600.0, detection_seconds=2.9)]
+        family = self._benchmark(plan, {("Hedonic", 0), ("Hedonic", 1)},
+                                 history={"units": {("youtube:top5000", 1, "hedonic"): 6500.0}})
+        took = {u.coords[2]: u.took for u in family.units if u.coords[1] == "Hedonic"}
+        self.assertEqual(took["0"], 6600.0)  # the tree said "done 2.9s" for a unit of 1h50
+        self.assertEqual(took["1"], 6500.0)  # skipped by the scan (no row seconds): from its records on disk
+
+    def _hedonic_audit(self, profile, eta=1000.0):
+        return self._audit(eta, key=f"youtube:top5000/seed1/hedonic/{profile}")
+
+    def test_a_running_unit_in_its_cover_audit_also_has_its_labelled_audit_to_go(self):
+        plan = [self._row("Hedonic", 1, "running", started=self.NOW - 3000.0, detection_seconds=2.9,
+                          audit=self._hedonic_audit("cover"))]
+        history = {"audits": {("youtube:top5000", "hedonic", "labelled"): [3700.0, 3900.0]}}
+        left = self._cost(self._benchmark(plan, history=history), "Hedonic", 1)[0][0]
+        self.assertEqual(round(left), 990 + 3800)  # the report's rest of the cover audit, then a labelled audit
+        # no finished labelled audit to go by: priced as long as the profile under way (2 policies of (600 + 1000) / 2)
+        self.assertEqual(round(self._cost(self._benchmark(plan), "Hedonic", 1)[0][0]), 990 + 1600)
+
+    def test_a_running_unit_in_its_last_profile_has_only_what_its_audit_reports(self):
+        plan = [self._row("Hedonic", 1, "running", started=self.NOW - 3000.0, detection_seconds=2.9,
+                          audit=self._hedonic_audit("labelled"))]
+        history = {"audits": {("youtube:top5000", "hedonic", "labelled"): [3800.0]}}
+        self.assertEqual(round(self._cost(self._benchmark(plan, history=history), "Hedonic", 1)[0][0]), 990)
+
+    def test_a_report_without_its_profile_adds_no_profile(self):
+        plan = [self._row("Hedonic", 1, "running", started=self.NOW - 3000.0, detection_seconds=2.9, audit=self._audit(1000.0))]
+        history = {"audits": {("youtube:top5000", "hedonic", "labelled"): [3800.0]}}  # a worker from before the key
+        self.assertEqual(round(self._cost(self._benchmark(plan, history=history), "Hedonic", 1)[0][0]), 990)
+
+    def test_the_history_counts_only_units_whose_audits_are_all_recorded(self):
+        from types import SimpleNamespace
+
+        method = SimpleNamespace(label="Hedonic", key="hedonic")
+        units = [("youtube:all", 0, method), ("youtube:all", 3, method)]
+        audited = {"youtube:all/seed0/hedonic/cover": {"audit_seconds": 2900.0},
+                   "youtube:all/seed0/hedonic/labelled": {"audit_seconds": 3785.0},
+                   "youtube:all/seed3/hedonic/cover": {"audit_seconds": 2950.0}}  # seed 3 is in its labelled audit
+        record = {"unit_seconds": 11.6, "runtime_seconds": 2.9, "dataset_report": {"m": 318432}}
+        with patch.object(runqueue.qs, "unit_record", lambda cfg, net, seed, m: record):
+            history = runqueue._benchmark_history(SimpleNamespace(induce=None), units, [True, True], audited)
+        self.assertEqual(history["seconds"], {("youtube:all", "hedonic"): [11.6 + 2900.0 + 3785.0]})
+        self.assertEqual(history["units"], {("youtube:all", 0, "hedonic"): 11.6 + 2900.0 + 3785.0})
+        self.assertEqual(history["audits"][("youtube:all", "hedonic", "cover")], [2900.0, 2950.0])
 
     def test_controlled_instances_follow_the_loops_of_the_grid(self):
         grid = {"graph-seeds": ["0", "1"], "mus": ["0.1", "0.2"], "overlap-fractions": ["0.05", "0.1", "0.15"]}
@@ -492,6 +539,121 @@ class TestRunqueueTree(unittest.TestCase):
             root = runqueue.tree(entry, {"current": 0, "pair": "amazon:top5000", "step": 3, "steps": [{}] * 26})
         self.assertTrue(any("now on amazon:top5000 (step 4 of 26)" in line for line in root.children[0].detail))
 
+    def test_runs_sit_under_the_method_they_study_in_the_order_the_methods_first_appear(self):
+        items = [{"name": "cal", "run": ["calibrate"]}, {"name": "spec", "run": ["spectrum-full"]},
+                 {"name": "cal-codeseg", "run": ["calibrate-baselines", "--methods", "codeseg"]},
+                 {"name": "bench-codeseg", "run": ["exp", "--methods", "codeseg"]},
+                 {"name": "bench-fox", "run": ["exp", "--methods", "fox"]}]
+        states = {"cal": ("completed", None)}
+        with patch.object(runqueue, "_status_of", lambda item, fresh=False: states.get(item["name"], ("new", None))), \
+                patch.object(runqueue, "data_state", lambda run, fresh=False: ("missing", "/nowhere/" + run[0])), \
+                patch.object(runqueue, "unit_counts", lambda run: (0, 4, "units")), \
+                patch.object(runqueue.rm, "effective_status", return_value="running"):
+            root = runqueue.tree({"name": "q", "items": items, "file": ""}, {})
+        self.assertEqual([g.label for g in root.children], ["Hedonic", "CoDeSEG", "FOX"])
+        hedonic, codeseg, _ = root.children
+        self.assertEqual([r.label for r in codeseg.children], ["3. cal-codeseg", "4. bench-codeseg"])
+        self.assertEqual((hedonic.done, hedonic.total, hedonic.status), (1, 2, "partial"))
+        self.assertEqual((root.done, root.total), (1, 5))  # the root still counts runs
+        self.assertEqual((hedonic.depth, hedonic.children[0].depth), (1, 2))
+
+    def test_a_methods_bar_is_how_far_its_runs_are_not_how_many_finished(self):
+        runs = [qm.Node(key=("run", "cal"), label="cal", status="running", done=7, total=8),
+                qm.Node(key=("run", "bench"), label="bench", status="running", done=6, total=8),
+                qm.Node(key=("run", "h"), label="h", status="done", done=3, total=3)]
+        root = qm.queue_node("q", runs, groups=["NcGame", "NcGame", "Hedonic"])
+        ncgame = root.children[0]
+        self.assertEqual((ncgame.done, ncgame.total, ncgame.share), (0, 2, (7 / 8 + 6 / 8) / 2))
+        self.assertIn(" 81% ", qt.right_columns(ncgame, 120, runqueue.tui.glyphs(True)))  # 0/2 runs, yet 81% of the work
+        self.assertAlmostEqual(root.share, (7 / 8 + 6 / 8 + 1) / 3)
+
+    def test_one_method_keeps_the_runs_at_the_top(self):
+        runs = [qm.Node(key=("run", "a"), label="a"), qm.Node(key=("run", "b"), label="b")]
+        root = qm.queue_node("q", runs, groups=["Hedonic", "Hedonic"])
+        self.assertEqual([c.key for c in root.children], [("run", "a"), ("run", "b")])
+
+
+class TestAdoptedPreview(unittest.TestCase):
+    """Calibrations an earlier run finished are copied only when the item starts; the view counts them now, and a
+    benchmark waiting for the file is counted with them while it stays awaiting."""
+
+    def test_adopted_calibrations_count_and_the_waiting_benchmark_is_previewed_with_them(self):
+        import contextlib
+        import io
+
+        from hedonic.experiments.overlapping import baseline_run as br
+
+        with tempfile.TemporaryDirectory() as tmp:
+            source = br.resolve(["--networks", "dblp:top5000", "--methods", "codeseg", "--output-dir", tmp + "/rc1"])
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(br.run_calibration(source), 0)  # a fixed setting: nothing is loaded
+            cal = ["calibrate-baselines", "--networks", "dblp:top5000,amazon:top5000", "--methods", "codeseg",
+                   "--output-dir", tmp + "/cal", "--adopt-from", tmp + "/rc1"]
+            state, folder = runqueue._baselines_state(cal[1:])
+            self.assertEqual(state, "missing")  # its own file decides whether the item runs: nothing is copied yet
+            self.assertEqual(runqueue._COUNTS[folder], (2, 2, "calibrations"))  # one adopted, one a published setting
+            self.assertTrue(any("authors' published setting" in line for line in runqueue._EARLIER[folder]))
+            mine = str(Path(tmp).resolve() / "cal" / br.TUNED_NAME)
+            self.assertEqual(runqueue._TUNED_PREVIEW[mine], [str(Path(tmp).resolve() / "rc1" / br.TUNED_NAME)])
+            seen = []
+
+            def judged(run):
+                seen.append(runqueue._option(run, "--tuned"))
+                return "partial", tmp + "/bench"
+
+            bench = ["exp", "--methods", "codeseg", "--tuned", mine]
+            with patch.object(runqueue, "_data_state", judged):
+                self.assertEqual(runqueue._preview(bench), tmp + "/bench")
+                self.assertEqual(runqueue._preview(["exp", "--tuned", tmp + "/nothing.json"]), "")
+            self.assertEqual(seen, [str(Path(tmp).resolve() / "rc1" / br.TUNED_NAME)])
+            self.assertIn("adopt from rc1", runqueue._PREVIEWED[tmp + "/bench"])
+
+
+class TestCalibrationProbes(unittest.TestCase):
+    """A Hedonic search counts its evaluations and lists every setting it probed, read from the calibration's ledger."""
+
+    def _ledger(self, folder: Path) -> None:
+        def record(network, gamma, seed, f1, minute):
+            return {"instance": network, "config": {"phase": "local", "gamma": gamma, "M": -1, "seed": seed},
+                    "status": "completed", "finished": f"2026-10-19 03:{minute:02d}:00", "detection_seconds": 2.0,
+                    "scoring_seconds": 3.0, "audit_seconds": 1.0,
+                    "metrics": {"f1": f1, "onmi": 0.5, "predicted_community_count": 100}}
+        (folder / "ledger").mkdir(parents=True)
+        rows = [record("dblp:top5000", 0.5, 0, 0.4, 0), record("dblp:top5000", 1e-3, 0, 0.6, 2),
+                record("dblp:top5000", 1e-3, 1, 0.8, 4), record("amazon:top5000", 0.1, 0, 0.7, 0),
+                record("amazon:top5000", 0.01, 0, 0.75, 10)]
+        (folder / "ledger" / "evals-x.jsonl").write_text("\n".join(__import__("json").dumps(r) for r in rows) + "\ntorn{")
+
+    def test_each_search_counts_its_evaluations_with_a_row_per_setting_and_the_runs_eta_is_its_longest_search(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            self._ledger(folder)
+            plan = {"output": str(folder), "networks": ["dblp:top5000", "amazon:top5000"], "cap": "unlimited"}
+            searches = [{"key": f"hedonic/{n}", "network": n, "phase": "local"} for n in plan["networks"]]
+            model = qb.calibrate(searches, {"hedonic/dblp:top5000"}, {"hedonic/dblp:top5000": 60.0})
+            node = qm.run_node(1, "cal", "", "running", model, None)
+            tuned = {"hedonic/dblp:top5000": {"absolute_resolution": 1e-3, "max_memberships": -1, "f1_median": 0.7}}
+            qb.decorate_calibration(node, plan, tuned)
+        dblp, amazon = (pair.children[0] for pair in node.children)
+        self.assertEqual((dblp.status, dblp.done, dblp.total, dblp.noun), ("done", 3, 3, "evaluations"))
+        self.assertEqual([(row.label, row.done, row.total) for row in dblp.children],
+                         [("γ 0.001 · F1 0.600 seed 0, 0.700 mean · 100 communities · 2 seeds  ★ chosen", 2, 2),
+                          ("γ 0.5 · F1 0.400 · 100 communities · seed 0", 1, 1)])
+        self.assertEqual(dblp.children[0].took, 12.0)
+        self.assertEqual(dblp.took, 18.0)  # its clock (60 s / 4 side by side) is less than its evaluations cost: reused
+        # the unfinished search is under way, priced from its own pace (one evaluation every 10 minutes); the rest of
+        # it is a row for the evaluation in flight and one for those to come, so every row has a bar
+        total = qb.SEARCH_EVALS["unlimited"]
+        self.assertEqual((amazon.status, amazon.done, amazon.total), ("running", 2, total))
+        self.assertEqual((amazon.left, amazon.basis), ((total - 2) * 600.0, "estimate"))
+        now, later = amazon.children[-2:]
+        self.assertEqual((now.status, now.done, now.total), ("running", 0, 1))
+        self.assertEqual((later.status, later.done, later.total, later.left), ("pending", 0, total - 3, (total - 3) * 600.0))
+        self.assertTrue(later.label.startswith(f"evaluations 4-{total}"))
+        self.assertEqual(sum(row.total for row in amazon.children), total)
+        self.assertEqual((node.done, node.total, node.status), (5, 3 + total, "running"))
+        self.assertEqual(node.left, amazon.left)  # side by side: the longest search, not the sum
+
 
 def _timed(done_pairs=(), parallel=1, seconds=2.0) -> qm.Family:
     """Like ``_family`` but the finished units carry the time they took."""
@@ -681,13 +843,13 @@ class TestFailureIsExplained(unittest.TestCase):
             self.assertEqual(runqueue.failure_lines("x"), [])
 
     def test_the_stop_lines_of_the_queue_carry_the_runs_error(self):
-        entry = {"name": "paper-queue", "items": [{"name": "calib", "run": ["calibrate"]}, {"name": "leveraging-gt", "run": ["startcurve"]}]}
+        entry = {"name": "overlap-queue", "items": [{"name": "calib", "run": ["calibrate"]}, {"name": "leveraging-gt", "run": ["startcurve"]}]}
         first, second = self._patched()
         with first, second, patch.object(runqueue, "_status_of", lambda item, fresh=False: ("stopped", None)):
             text = ANSI.sub("", "\n".join(runqueue.stop_lines(entry, {"current": 1, "reason": "leveraging-gt ended as failed"}, "failed")))
         self.assertIn("failed at leveraging-gt (item 2 of 2)", text)
         self.assertIn("ValueError: Invalid initial_membership", text)
-        self.assertIn("hedonic run resume paper-queue", text)
+        self.assertIn("hedonic run resume overlap-queue", text)
 
     def test_the_tree_view_shows_a_notice_under_the_header_and_still_fits_every_size(self):
         root = _tree()
@@ -715,6 +877,62 @@ class TestModelFailure(unittest.TestCase):
 
 
 @unittest.skipUnless(os.name == "posix", "needs a pty")
+def _emulate(data: str, rows: int, cols: int) -> list[str]:
+    """The screen a terminal shows after ``data``: cursor positioning, erase in line and display, text (enough for
+    the viewer's output; other escape sequences are ignored)."""
+    screen = [[" "] * cols for _ in range(rows)]
+    r = c = i = 0
+    while i < len(data):
+        if data[i] == "\x1b":
+            match = re.match(r"\x1b\[([0-9;?<]*)([A-Za-z])", data[i:])
+            if match:
+                params, command = match.groups()
+                if command == "H" and not params.startswith("?"):
+                    numbers = [int(x) for x in params.split(";") if x]
+                    r = min(rows - 1, numbers[0] - 1) if numbers else 0
+                    c = numbers[1] - 1 if len(numbers) > 1 else 0
+                elif command == "K":
+                    screen[r][c:] = [" "] * (cols - c)
+                elif command == "J" and not params.startswith("?"):
+                    screen[r][c:] = [" "] * (cols - c)
+                    for below in range(r + 1, rows):
+                        screen[below] = [" "] * cols
+                i += len(match.group(0))
+            else:
+                i += 1
+            continue
+        ch = data[i]
+        if ch == "\r":
+            c = 0
+        elif ch == "\n":
+            r = min(rows - 1, r + 1)
+        elif c < cols:
+            screen[r][c] = ch
+            c += 1
+        i += 1
+    return ["".join(row).rstrip() for row in screen]
+
+
+class TestPaint(unittest.TestCase):
+    def test_the_first_frame_draws_every_row_and_clears_below(self):
+        text = qt.paint(None, ["a", "b"])
+        self.assertTrue(text.startswith(qt.SYNC_ON) and text.endswith(qt.SYNC_OFF))
+        self.assertEqual(_emulate("x" * 5 + "\r\n" + "y" * 5 + "\r\nzzz" + text, 4, 10)[:3], ["a", "b", ""])
+
+    def test_an_unchanged_frame_writes_nothing(self):
+        self.assertEqual(qt.paint(["a", "› selected", "c"], ["a", "› selected", "c"]), "")
+
+    def test_only_the_rows_that_changed_are_written(self):
+        text = qt.paint(["a", "› selected", "c ⠦"], ["a", "› selected", "c ⠧"])
+        self.assertNotIn("selected", text)  # the highlighted row is left alone
+        self.assertIn("\x1b[3;1Hc ⠧\x1b[K", text)
+        self.assertEqual(_emulate(qt.paint(None, ["a", "› selected", "c ⠦"]) + text, 3, 20), ["a", "› selected", "c ⠧"])
+
+    def test_a_shorter_frame_clears_the_rows_below_it(self):
+        screen = _emulate(qt.paint(None, ["a", "b", "c"]) + qt.paint(["a", "b", "c"], ["a"]), 3, 5)
+        self.assertEqual(screen, ["a", "", ""])
+
+
 class TestPty(unittest.TestCase):
     SCRIPT = textwrap.dedent("""
         import sys
@@ -750,9 +968,9 @@ class TestPty(unittest.TestCase):
                     except OSError:
                         return
 
-        def screen() -> str:
+        def screen() -> str:  # the rows only change where they differ, so replay the whole output onto a screen
             text = out.decode(errors="ignore")
-            return ANSI.sub("", text[text.rfind("\x1b[H"):])
+            return "\n".join(_emulate(text[text.rfind("\x1b[?1049h"):], 30, 110))
         try:
             pump(2.0)
             first = screen()

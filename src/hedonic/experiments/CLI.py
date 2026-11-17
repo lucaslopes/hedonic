@@ -3,7 +3,7 @@
 Two console scripts share this module:
 
 * ``hedonic`` (:func:`hedonic_main`) is the task-oriented front door: ``hedonic
-  run`` starts and manages durable runs (``hedonic run queue paper`` is the
+  run`` starts and manages durable runs (``hedonic run queue overlap`` is the
   overlap paper's experiment queue, ``hedonic run disjoint --preset paper`` the
   disjoint paper's benchmark), ``hedonic setup`` downloads data and prepares the
   external methods, and ``hedonic show``, ``guide``, ``config``, ``pickle`` and
@@ -16,7 +16,7 @@ Examples::
 
     hedonic --help
     hedonic setup --dry-run --all
-    hedonic run queue paper --dry-run
+    hedonic run queue overlap --dry-run
     hedonic run disjoint --preset smoke --foreground
     hedonic run exp --yes
     hedonic-exp list
@@ -144,12 +144,22 @@ COMMANDS: dict[str, Command] = {
         ),
         needs_data="snap-networks",
     ),
+    "overlapping-rescore": Command(
+        name="overlapping-rescore",
+        module="hedonic.experiments.overlapping.cover_rescore",
+        attr="main",
+        summary=(
+            "Score the covers a benchmark saved again (paper filter, Omega, singleton mode, matching weight, NF1), "
+            "or --check them against their records; no detector runs"
+        ),
+        needs_data="snap-networks",
+    ),
     "overlapping-calibrate": Command(
         name="overlapping-calibrate",
         module="hedonic.experiments.overlapping.calibrate",
         attr="main",
         summary=(
-            "Calibrate Hedonic's resolution and membership cap per network:cover pair and write hoc_tuned.json "
+            "Calibrate Hedonic's resolution and membership cap per network:cover pair and write hedonic_tuned.json "
             "for runs that take --tuned (durable form: hedonic run calibrate)"
         ),
         needs_data="snap-networks",
@@ -315,7 +325,7 @@ def main(argv: list[str] | None = None) -> int:
 
 
 # ``hedonic run VERB``: the experiment each run verb starts (its hedonic-exp command).
-RUN_ALIASES: dict[str, str] = {"exp": "quickstart", "paper": "quickstart", "paper-hoc": "quickstart",
+RUN_ALIASES: dict[str, str] = {"exp": "quickstart", "paper": "quickstart", "paper-hedonic": "quickstart",
                                "spectrum": "overlapping-gt-spectrum", "spectrum-full": "overlapping-gt-spectrum",
                                "posthoc": "overlapping-gt-posthoc",
                                "controlled": "overlapping-controlled",
@@ -325,6 +335,7 @@ RUN_ALIASES: dict[str, str] = {"exp": "quickstart", "paper": "quickstart", "pape
                                "calibrate-baselines": "baseline-calibrate",
                                "disjoint": "disjoint"}
 # ``hedonic run VERB`` for the durable runs themselves (runmanager.VERBS).
+RENAMED_RUN_VERBS = {"paper-hoc": "paper-hedonic"}  # refused with the new name: the method is called hedonic
 RUN_VERBS = ("list", "status", "attach", "logs", "stop", "resume", "check", "queue")
 # hedonic-exp commands that a `hedonic` command performs durably; the deprecation notice names it.
 RUN_EQUIVALENTS: dict[str, str] = {"quickstart": "hedonic run exp", "overlapping-gt-spectrum": "hedonic run spectrum",
@@ -364,11 +375,11 @@ HELP_SECTIONS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
                                      "scored against its ground truth (a wizard without options; --list)"),
     )),
     ("Overlapping communities (SNAP networks)", (
-        ("hedonic run queue paper", "the overlap paper's experiments, one after another (--dry-run plans, --root DIR)"),
+        ("hedonic run queue overlap", "the overlap paper's experiments, one after another (--dry-run plans, --root DIR)"),
         ("hedonic run exp [options]", "a benchmark: networks x methods x seeds (a wizard without options)"),
         ("hedonic run paper", "the whole-graph benchmark profile (= run exp --config paper)"),
-        ("hedonic run paper-hoc", "only its Hedonic rows, at the tuned per-network settings"),
-        ("hedonic run calibrate", "calibrate Hedonic's resolution and cap per pair; writes hoc_tuned.json for --tuned"),
+        ("hedonic run paper-hedonic", "only its Hedonic rows, at the tuned per-network settings"),
+        ("hedonic run calibrate", "calibrate Hedonic's resolution and cap per pair; writes hedonic_tuned.json for --tuned"),
         ("hedonic run calibrate-baselines --networks LIST",
          "calibrate the eight baselines on each pair without ground truth"),
         ("hedonic run spectrum", "ground-truth robustness spectrum of the local covers"),
@@ -393,6 +404,8 @@ HELP_SECTIONS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
         ("hedonic run check [NAME]", "morning check: replay a sample of the results and compare"),
         ("hedonic run queue FILE|NAME", "run the experiments of a queue file one after another (overnight)"),
         ("hedonic run", "your favourite config (hedonic config set run NAME), else the wizard"),
+        ("hedonic run ... --rerun-memory", "run again what the memory watchdog stopped (below HEDONIC_MEMORY_FLOOR, "
+                                           "default 10% free) or a queue declared out of memory; by default they stand"),
     )),
     ("Data, runtimes and settings", (
         ("hedonic setup [--all]", "download SNAP pairs and build the external methods (--dry-run checks the tools)"),
@@ -453,6 +466,15 @@ def hedonic_main(argv: list[str] | None = None) -> int:
     if argv[0] in ("-V", "--version"):
         print(_package_version())
         return 0
+    if argv[0] == "run" and "--rerun-memory" in argv[1:]:
+        # every `hedonic run` verb: runs stopped for memory (or declared out of memory) are run again; the variable
+        # reaches the detached worker and every runner it starts (``memwatch.rerun_requested``)
+        import os
+
+        from hedonic.experiments.overlapping import memwatch
+
+        argv = [arg for arg in argv if arg != "--rerun-memory"]
+        os.environ[memwatch.RERUN_ENV] = "1"
     if argv[0] == "setup":  # data and external runtimes
         from hedonic.experiments.overlapping import codeseg_setup
 
@@ -490,6 +512,9 @@ def hedonic_main(argv: list[str] | None = None) -> int:
         from hedonic.experiments.overlapping import info
 
         return info.main(argv[1:])
+    if argv[0] == "run" and len(argv) >= 2 and argv[1] in RENAMED_RUN_VERBS:
+        print(f"`hedonic run {argv[1]}` is now `hedonic run {RENAMED_RUN_VERBS[argv[1]]}`.", file=sys.stderr)
+        return 2
     if argv[0] != "run" or len(argv) < 2 or (argv[1] not in RUN_ALIASES and argv[1] not in RUN_VERBS):
         import difflib
 
@@ -506,7 +531,7 @@ def hedonic_main(argv: list[str] | None = None) -> int:
 
         return runmanager.dispatch(argv[1:])
     command, rest = RUN_ALIASES[argv[1]], argv[2:]
-    shorthand = {"paper": "hedonic run exp --config paper", "paper-hoc": "hedonic run exp --config paper-hoc",
+    shorthand = {"paper": "hedonic run exp --config paper", "paper-hedonic": "hedonic run exp --config paper-hedonic",
                  "spectrum-full": "hedonic run spectrum --config full"}
     if argv[1] in shorthand and ("-h" in rest or "--help" in rest):  # the usage below names the long form
         print(f"`hedonic run {argv[1]}` is `{shorthand[argv[1]]}`; its options:\n")
@@ -544,7 +569,7 @@ def hedonic_main(argv: list[str] | None = None) -> int:
         if argv[1] != "spectrum":  # named config: `hedonic run spectrum --config full`
             rest = ["--config", argv[1].removeprefix("spectrum-"), *rest]
         return gt_spectrum.front_main(rest)
-    if argv[1] in ("paper", "paper-hoc"):  # named configs: `hedonic run exp --config paper[-hoc]`
+    if argv[1] in ("paper", "paper-hedonic"):  # named configs: `hedonic run exp --config paper[-hedonic]`
         rest = ["--config", argv[1], *rest]
     if rest and rest[0] in ("-h", "--help"):
         return _dispatch_help(command)
@@ -607,7 +632,7 @@ examples:
   hedonic-exp disjoint-stats --data ~/Databases/Hedonic/Disjoint/sbm-smoke
 
   # Overlapping SNAP studies (data: hedonic setup --pairs dblp:top5000,...)
-  hedonic-exp start-quality --config start-quality-hoc-local --dry-run
+  hedonic-exp start-quality --config start-quality-hedonic --dry-run
   hedonic-exp overlapping-calibrate --networks dblp:top5000 --dry-run
   hedonic-exp baseline-calibrate --dry-run --methods all
   hedonic-exp baseline-calibrate --smoke --methods clique_percolation,codeseg --max-evals 6

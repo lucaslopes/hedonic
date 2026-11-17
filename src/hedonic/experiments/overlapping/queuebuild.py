@@ -209,7 +209,7 @@ def record_target(record: dict) -> str:
 
 
 def startcurve(plan: dict, records: dict[str, dict], keys: list[dict]) -> qm.RunModel:
-    """The start-quality curve: HOC from the ground-truth cover corrupted by a share of incidence switches, per pair."""
+    """The start-quality curve: Hedonic from the ground-truth cover corrupted by a share of incidence switches, per pair."""
     workers = int(plan.get("workers") or 1)
     settings = plan.get("settings") or {}
     pair_dim = qm.Dim("pair", "pairs", about="a network with one of its covers; the start is that cover, the graph its covered subgraph")
@@ -257,14 +257,14 @@ def startcurve(plan: dict, records: dict[str, dict], keys: list[dict]) -> qm.Run
 
     family = qm.Family(
         "conditions", "conditions",
-        "one HOC run (local moving) from the ground-truth cover corrupted by one level, scored against the reference",
+        "one Hedonic run (local moving) from the ground-truth cover corrupted by one level, scored against the reference",
         [pair_dim, level_dim, seed_dim], units, "pair > corruption level > seed", cost,
         [f"{workers} conditions run side by side; a condition's cost is its recorded seconds divided by that"],
         parallel=workers)
     notes = []
     for network, setting in settings.items():
         if isinstance(setting, dict) and setting.get("cap") is not None:
-            notes.append(f"{pair_label(network)}: HOC at cap {setting['cap']} and gamma {setting['gamma']:.4g}"
+            notes.append(f"{pair_label(network)}: Hedonic at cap {setting['cap']} and gamma {setting['gamma']:.4g}"
                          + (f" ({setting['source']})" if setting.get("source") else ""))
     return qm.RunModel([family], notes)
 
@@ -274,7 +274,7 @@ AUDIT_FRESH_SECONDS = 120.0  # a progress report older than this is not trusted 
 
 
 def benchmark(cfg, units: list[tuple[str, int, object]], finished: list[bool], progress: dict,
-              now: float | None = None) -> qm.RunModel:
+              now: float | None = None, history: dict | None = None) -> qm.RunModel:
     """The benchmark: one detector run per planned (pair, method, seed), executed in ``cfg.order``.
 
     ``units`` is the run's plan (``quickstart.build_plan``), so a deterministic method has one unit per pair (its lowest
@@ -286,18 +286,26 @@ def benchmark(cfg, units: list[tuple[str, int, object]], finished: list[bool], p
     (BigCLAM's cover of YouTube/top5k puts one vertex in 1,825 communities and its audit has run for hours, where every
     other cover of that pair took under a minute). A unit already running past its estimate has no basis for what is
     left, and the other seeds of its cell are priced at least as long as it has taken so far.
+
+    ``history`` (``runqueue._benchmark_history``) holds what the finished units on disk took, for every pair of the run,
+    including those a by-pair queue ran in earlier steps (their progress rows are gone). A cell this run has not timed is
+    priced from its own units on disk, else from the same method on the other pairs, per edge of the graph the detectors
+    saw (pairs with the same cover only: a top-5,000 subgraph says little about a whole network), and only then by the
+    planning constant, which is for the whole graph and so far too long for a covered top-5,000 subgraph.
     """
     now = time.time() if now is None else now
     robust = bool(getattr(cfg, "robustness", False))
     pair_dim = qm.Dim("pair", "pairs", about="a network with one ground-truth cover; the detectors see the covered subgraph "
                       "and are scored against that cover")
-    method_dim = qm.Dim("method", "methods", about="the community-detection method (Hedonic is HOC-local at its calibrated settings)")
+    method_dim = qm.Dim("method", "methods", about="the community-detection method (Hedonic local moving at its calibrated settings)")
     seed_dim = qm.Dim("seed", "seeds", "seed {}", about="the method's random seed; a deterministic method runs once per pair, "
                       "at the lowest seed (the run's replication, see `hedonic run exp --help`)")
     measured: dict[tuple[str, str], list[float]] = {}
+    whole: dict[tuple[str, str, str], float] = {}  # what a unit this run timed took: detection, audits and scoring
     for row in progress.get("plan") or []:
         if row.get("status") == "completed" and isinstance(row.get("seconds"), (int, float)):
             measured.setdefault((pair_label(str(row.get("network"))), str(row.get("label"))), []).append(float(row["seconds"]))
+            whole[pair_label(str(row.get("network"))), str(row.get("label")), str(row.get("seed"))] = float(row["seconds"])
     running_rows = {(pair_label(str(r.get("network"))), str(r.get("label")), str(r.get("seed"))): r
                     for r in progress.get("plan") or [] if r.get("status") == "running"}
     # the detection time of every unit the worker knows (also those it found finished and skipped: its scan reads them)
@@ -307,27 +315,87 @@ def benchmark(cfg, units: list[tuple[str, int, object]], finished: list[bool], p
         if isinstance(seconds, (int, float)):
             detection[pair_label(str(row.get("network"))), str(row.get("label")), str(row.get("seed"))] = float(seconds)
     expected: dict[tuple[str, str], float] = {}
+    cells: dict[tuple[str, str], tuple[str, str]] = {}
     for net, _seed, method in units:
         expected[pair_label(net), method.label] = qs.expected_seconds(method, cfg, net)
+        cells[pair_label(net), method.label] = (net, method.key)
+    past = (history or {}).get("seconds") or {}
+    sizes = (history or {}).get("edges") or {}
+    unit_took = (history or {}).get("units") or {}
+    audits = (history or {}).get("audits") or {}
+
+    def from_disk(cell: tuple[str, str]) -> float | None:
+        """What one unit of the cell should take from the finished units on disk: its own, else the same method's on the
+        other pairs of the same cover per edge (edges of the graph the detectors saw when the pair has a record, else of
+        the whole network)."""
+        net, key = cells[cell]
+        if past.get((net, key)):
+            return statistics.fmean(past[net, key])
+        cover = net.partition(":")[2] or "all"
+        others = {t: statistics.fmean(v) for (t, k), v in past.items()
+                  if k == key and v and t != net and (t.partition(":")[2] or "all") == cover}
+        if not others:  # another cover is another kind of graph (a top-5,000 subgraph against a whole network)
+            return None
+        if net in sizes:
+            rates = [seconds / sizes[t] for t, seconds in others.items() if sizes.get(t)]
+            if rates:
+                return statistics.fmean(rates) * sizes[net]
+        return scaled(net, others)
 
     def estimate(cell: tuple[str, str]) -> qm.Cost:
-        """What one unit of the cell takes: the mean of its finished units, else the planning constant (detection only)."""
+        """What one unit of the cell takes: the mean of its finished units, else what the units on disk say (its own, or
+        the same method on other pairs), else the planning constant (detection only)."""
         if measured.get(cell):
             return statistics.fmean(measured[cell]), "measured"
+        seconds = from_disk(cell)
+        if seconds is not None:
+            return seconds, "estimate"
         return expected[cell], "bound" if robust else "estimate"
 
     def elapsed(key: tuple[str, str, str]) -> float | None:
         started = (running_rows.get(key) or {}).get("started")
         return max(0.0, now - float(started)) if isinstance(started, (int, float)) else None
 
+    def profiles_left(key: tuple[str, str, str], info: dict) -> list[str]:
+        """The audit profiles of a running unit after the one its audit reports (``cover``, then ``labelled`` for
+        Hedonic). The report's key names the profile; a report without it (a worker from before it was kept) adds
+        nothing, because the ledger cannot say: a unit's audits are written together once all of them are done."""
+        from hedonic.experiments.overlapping import cover_audit as ca
+
+        current = str(info.get("key") or "").rpartition("/")[2]
+        if not current or key[:2] not in cells:
+            return []
+        net, method_key = cells[key[:2]]
+        try:
+            seed = int(key[2])
+        except ValueError:
+            return []
+        profiles = [k.rpartition("/")[2] for k in ca.unit_keys(net, seed, method_key)]
+        return profiles[profiles.index(current) + 1:] if current in profiles else []
+
     def audit_left(key: tuple[str, str, str]) -> float | None:
-        """Seconds the exact audit of a running unit has left, from the progress it reported (None: unknown or stale)."""
+        """Seconds the exact audits of a running unit have left, from the progress it reported (None: unknown or stale).
+
+        The report covers the profile under way (its policies included); each profile still to come is priced by what
+        that profile took for the same method on this pair's finished seeds, else as long as the one under way."""
         info = (running_rows.get(key) or {}).get("audit")
         if not isinstance(info, dict) or not isinstance(info.get("eta_seconds"), (int, float)):
             return None
         updated = info.get("updated")
         age = max(0.0, now - float(updated)) if isinstance(updated, (int, float)) else 0.0
-        return max(0.0, float(info["eta_seconds"]) - age) if age <= AUDIT_FRESH_SECONDS else None
+        if age > AUDIT_FRESH_SECONDS:
+            return None
+        eta = float(info["eta_seconds"])
+        left = max(0.0, eta - age)
+        later = profiles_left(key, info)
+        if later:
+            number, policies = int(info.get("number") or 1), max(1, int(info.get("policies") or 1))
+            per_policy = (float(info.get("elapsed") or 0.0) + eta) / max(1, 1 + policies - number)
+            net, method_key = cells[key[:2]]
+            for profile in later:
+                seen = audits.get((net, method_key, profile))
+                left += statistics.fmean(seen) if seen else per_policy * policies
+        return left
 
     def overdue(key: tuple[str, str, str]) -> float | None:
         """Seconds a running unit has taken when that is more than its cell's estimate and it can say no more, else None."""
@@ -347,7 +415,8 @@ def benchmark(cfg, units: list[tuple[str, int, object]], finished: list[bool], p
     made = []
     for (net, seed, method), done in zip(units, finished):
         key = (pair_label(net), method.label, str(seed))
-        seconds = detection.get(key) if done else None
+        # a finished unit took its whole span (detection, the audits of its cover, scoring), not its detection alone
+        seconds = (whole.get(key) or unit_took.get((net, seed, method.key)) or detection.get(key)) if done else None
         note = ""
         if key in running_rows and not done:
             spent, limit = elapsed(key), estimate(key[:2])[0]
@@ -388,7 +457,9 @@ def benchmark(cfg, units: list[tuple[str, int, object]], finished: list[bool], p
         + (["a unit's time includes the exact robustness audit of its saved cover, which runs right after the detector; a "
             "method not yet timed on a pair is priced by its detection alone, so its ETA is a lower bound"]
            if robust else [])
-        + ["a method not yet timed here uses its planning constant, an upper bound for covered subgraphs on detection",
+        + ["a method not yet timed here is priced from its finished units on the other pairs of the same cover (per edge "
+           "of the graph the detectors saw); with none, from its planning constant, an upper bound for covered subgraphs "
+           "on detection",
            "a unit's exact audit reports the vertices it has done, so a running unit's remaining time is extrapolated from "
            "them (the vertices go through in a fixed pseudo-random order, so the rate so far is the rate of the rest) and the "
            "other seeds of its method are priced at its whole length",
@@ -398,6 +469,82 @@ def benchmark(cfg, units: list[tuple[str, int, object]], finished: list[bool], p
 
 
 # --------------------------------------------------------------------------- the calibration
+# --------------------------------------------------------------------------- the cover audit
+PROFILE_MEANING = {"cover": "the saved scoring cover (every method)",
+                   "labelled": "the exact labelled memberships Hedonic returned"}
+
+
+def audit_seconds(record: dict) -> float | None:
+    """What one audit record cost: loading its graph (when it did), building the state, and the exact audit."""
+    parts = [record.get(key) for key in ("load_seconds", "state_seconds", "audit_seconds")]
+    if not isinstance(parts[2], (int, float)):
+        return None
+    return float(sum(part for part in parts if isinstance(part, (int, float))))
+
+
+def audit(plan: dict, records: dict[str, dict], progress: dict | None = None, now: float | None = None,
+          finished: set[str] | None = None) -> qm.RunModel:
+    """The cover audit (``hedonic run audit``): one exact audit per saved cover and profile, methods outermost.
+
+    A finished audit took its recorded seconds. One still to do costs what the same method's audits of the same pair and
+    profile took ("measured"), else the same method and profile on other pairs scaled by edges ("estimate"). The running
+    audit costs what its progress report says is left while the report is fresh (``AUDIT_FRESH_SECONDS``). ``finished``
+    is the keys the state check found done (a record of an earlier cover of a unit that ran again is not); by default
+    every recorded key.
+    """
+    from hedonic.experiments.overlapping import cover_audit as ca
+
+    now = time.time() if now is None else now
+    current = (progress or {}).get("current") if (progress or {}).get("status") in ("running", "setup") else None
+    fresh = bool(current) and now - float(current.get("updated") or 0.0) <= AUDIT_FRESH_SECONDS
+    method_dim = qm.Dim("method", "methods", "{}", about="the detector whose saved covers are audited")
+    pair_dim = qm.Dim("pair", "pairs", about="a network with one of its covers; the graph is its covered subgraph")
+    seed_dim = qm.Dim("seed", "seeds", "seed {}", about="the detector seed of the audited cover")
+    profile_dim = qm.Dim("profile", "profiles", "{}", about="which membership profile of the run is audited",
+                         meaning=PROFILE_MEANING)
+    units, cells, by_method = [], {}, {}
+    for c in ca.conditions(plan):
+        record = records.get(c["key"])
+        if record is not None and finished is not None and c["key"] not in finished:
+            record = None  # stale: it describes an earlier cover of its unit
+        seconds = audit_seconds(record) if record else None
+        note = ""
+        if record and record.get("status") == "completed":
+            block = (record.get("policies") or {}).get(ca.PRIMARY_POLICY) or {}
+            if isinstance(block.get("stable_measure_log"), (int, float)):
+                note = f"robust {block['stable_measure_log']:.3f}"
+        elif record:
+            note = str(record.get("status"))
+        running = bool(current) and current.get("key") == c["key"] and record is None
+        units.append(qm.Unit((method_label(c["method"]), pair_label(c["network"]), str(c["seed"]), c["profile"]),
+                             record is not None, seconds, note, running, seconds))
+        if seconds is not None:
+            cells.setdefault((c["method"], c["network"], c["profile"]), []).append(seconds)
+            by_method.setdefault((c["method"], c["profile"]), {}).setdefault(c["network"], []).append(seconds)
+    key_of = {u.coords: c for u, c in zip(units, ca.conditions(plan))}
+
+    def cost(unit: qm.Unit) -> qm.Cost:
+        c = key_of[unit.coords]
+        if unit.running and fresh and isinstance(current.get("eta_seconds"), (int, float)):
+            age = now - float(current["updated"])
+            return max(0.0, float(current["eta_seconds"]) - age), "estimate"
+        cell = cells.get((c["method"], c["network"], c["profile"]))
+        if cell:
+            return statistics.fmean(cell), "measured"
+        others = {net: statistics.fmean(v) for net, v in by_method.get((c["method"], c["profile"]), {}).items()}
+        guess = scaled(c["network"], others)
+        return (guess, "estimate") if guess is not None else (None, "")
+
+    family = qm.Family(
+        "audits", "audits",
+        "the exact robustness of one saved cover under one profile: every vertex's stable resolutions, both action spaces",
+        [method_dim, pair_dim, seed_dim, profile_dim], units, "method > pair > seed > profile", cost,
+        [f"{plan.get('workers', 1)} forked vertex workers per audit; the audits run one at a time",
+         "an audit costs what the same method's audits of the pair took, else of other pairs scaled by edges"])
+    stage = str((progress or {}).get("stage") or "") if current else ""
+    return qm.RunModel([family], [], stage)
+
+
 SEARCHES_AT_ONCE = 4  # the calibration runs its four searches side by side
 
 
@@ -415,6 +562,166 @@ def calibrate(searches: list[dict], have: set[str], seconds: dict[str, float] | 
                        notes=[f"{SEARCHES_AT_ONCE} searches run side by side; a finished search's time is its recorded "
                               "wall-clock divided by that"], parallel=SEARCHES_AT_ONCE)
     return qm.RunModel([family])
+
+
+# A search's evaluations are not known in advance (each result picks the next probe): these are the usual totals, so a
+# search under way has a bar. Resolution only (--cap unlimited): the wide scan's 11 points and golden section up to 20,
+# the clique-regime probe, the snap and four more confirmation seeds. A cap search alternates resolution and cap.
+SEARCH_EVALS = {"unlimited": 26, "search": 40}
+
+
+def calibration_evals(folder: Path, network: str) -> list[dict]:
+    """Every evaluation of ``network`` in the calibration's ledger, oldest first (a search may reuse another's)."""
+    out = []
+    for path in sorted((folder / "ledger").glob("evals*.jsonl")):
+        try:
+            lines = path.read_text().splitlines()
+        except OSError:
+            continue
+        for line in lines:
+            try:
+                record = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(record, dict) and record.get("instance") == network and isinstance(record.get("config"), dict):
+                out.append(record)
+    return sorted(out, key=lambda r: str(r.get("finished", "")))
+
+
+def decorate_calibration(node: qm.Node, plan: dict, searches: dict[str, dict]) -> None:
+    """Count each Hedonic search in its evaluations (detector runs, each scored and audited) instead of as one unit,
+    and list under it a row per setting it probed: resolution, cap when there is one, F1 over the seeds that ran it and
+    the communities found; ★ marks the setting it chose. Parents count the evaluations under them."""
+    folder = Path(plan["output"])
+    labels = {pair_label(t): t for t in plan["networks"]}
+    running = node.status == "running"
+    expected = SEARCH_EVALS.get(plan.get("cap") or "search", 40)
+
+    def visit(n: qm.Node) -> None:
+        for child in n.children:
+            visit(child)
+        if n.children or len(n.key) < 2 or not str(n.key[-1]).endswith("search"):
+            return
+        target = labels.get(n.key[-2])
+        if not target:
+            return
+        records = calibration_evals(folder, target)
+        entry = searches.get(f"hedonic/{target}") or {}
+        chosen = ((float(f"{float(entry['absolute_resolution']):.6g}"), int(entry["max_memberships"]))
+                  if entry.get("absolute_resolution") is not None else None)
+        groups: dict[tuple, list[dict]] = {}
+        for record in records:
+            config = record["config"]
+            groups.setdefault((float(f"{float(config['gamma']):.6g}"), int(config["M"])), []).append(record)
+        for (gamma, cap), group in sorted(groups.items()):
+            ok = [r for r in group if r.get("status") == "completed" and isinstance(r.get("metrics"), dict)]
+            f1 = statistics.fmean(r["metrics"]["f1"] for r in ok) if ok else None
+            counts = [r["metrics"].get("predicted_community_count") for r in ok if r["metrics"].get("predicted_community_count")]
+            first = next((r for r in ok if int(r["config"].get("seed", 0)) == 0), None)
+            # the other probes ran seed 0 only: a confirmed setting shows its seed-0 F1 too, so the rows compare
+            score = (f" · F1 {first['metrics']['f1']:.3f} seed 0, {f1:.3f} mean" if first is not None and len(ok) > 1
+                     else f" · F1 {f1:.3f}" if f1 is not None else f" · {group[0].get('status', '?')}")
+            label = (f"γ {gamma:.3g}" + (f" · cap {cap}" if cap > 0 else "") + score
+                     + (f" · {int(statistics.median(counts)):,} communities" if counts else ""))
+            seeds = sorted({int(r["config"].get("seed", 0)) for r in group})
+            label += (f" · seed {seeds[0]}" if len(seeds) == 1 else f" · {len(seeds)} seeds") + (
+                "  ★ chosen" if chosen == (gamma, cap) else "")
+            row = qm.Node(key=n.key + ("probe", gamma, cap), label=label, depth=n.depth + 1, noun="evaluations",
+                          done=len(group), total=len(group), status="done" if ok else "failed")
+            row.took = sum(float(r.get(k) or 0.0) for r in group
+                           for k in ("detection_seconds", "scoring_seconds", "audit_seconds"))
+            row.detail = [f"γ = {gamma:.6g}" + (f", cap {cap}" if cap > 0 else ", no cap")]
+            for r in group:
+                m, lf = r.get("metrics") or {}, r.get("label_free") or {}
+                row.detail.append(
+                    f"  seed {r['config'].get('seed', 0)}: {r.get('status')}"
+                    + (f" · F1 {m['f1']:.4f} · ONMI {m.get('onmi', 0):.4f} · {m.get('predicted_community_count', '?'):,} communities"
+                       f" · max regret {lf.get('max_regret', float('nan')):.2g} · detection {float(r.get('detection_seconds') or 0):.1f} s"
+                       if m else f" · {str(r.get('reason') or '')[:120]}"))
+            n.children.append(row)
+        done = len(records)
+        spent = sum(row.took for row in n.children if row.done)
+        if n.status == "done" and spent > n.took:  # its evaluations were reused from the ledger: show what they cost
+            n.took = spent
+            n.detail.append("its evaluations were reused from the ledger; the time shown is what they cost when they ran")
+        n.noun = "evaluations"
+        n.total = done if n.status == "done" else max(done + 1, expected)
+        n.done = done if n.status != "done" else n.total
+        if n.status != "done":
+            if done and running:  # every unfinished search of a running calibration is under way
+                n.status = "running"
+            pace = search_pace(records)
+            if pace is not None:
+                n.left, n.basis, n.unknown = (n.total - n.done) * pace, "estimate", 0
+            # what is left: the probe being evaluated (its gamma is known only once it is recorded) and the ones to come
+            left = n.total - n.done
+            under_way = n.status == "running"
+            if under_way:
+                row = qm.Node(key=n.key + ("probe", "now"), label=f"evaluation {done + 1}: under way (its γ is recorded when it ends)",
+                              depth=n.depth + 1, noun="evaluations", done=0, total=1, status="running")
+                if pace is not None:
+                    since = time.time() - (search_last(records) or time.time())
+                    row.left, row.basis = max(pace - since, 0.0), "estimate"
+                else:
+                    row.unknown = 1
+                n.children.append(row)
+                left -= 1
+            if left > 0:
+                first = done + 1 + under_way
+                row = qm.Node(key=n.key + ("probe", "later"),
+                              label=(f"evaluations {first}-{n.total}" if left > 1 else f"evaluation {first}")
+                              + ": each γ is chosen from the results before it",
+                              depth=n.depth + 1, noun="evaluations", done=0, total=left, status="pending")
+                if pace is not None:
+                    row.left, row.basis = left * pace, "estimate"
+                else:
+                    row.unknown = 1
+                n.children.append(row)
+            n.detail.append(f"{done} evaluations so far; a search like this one usually takes about {expected} "
+                            "(each result chooses the next probe, so the total is not known in advance)"
+                            + (f"; one every {pace:.0f} s so far" if pace is not None else ""))
+        if entry:
+            n.detail.append(f"chosen: γ {float(entry['absolute_resolution']):.6g}"
+                            + (f", cap {entry['max_memberships']}" if int(entry["max_memberships"]) > 0 else ", no cap")
+                            + f" · F1 median {entry.get('f1_median', float('nan')):.4f} over seeds {entry.get('confirm_seeds')}")
+
+    def regroup(n: qm.Node) -> None:
+        kids = [c for c in n.children if not c.log]
+        if not kids or str(n.key[-1]).endswith("search"):  # a search keeps its own count: its rows only break it down
+            return
+        for child in kids:
+            regroup(child)
+        status = n.status
+        qm._aggregate(n, kids)
+        n.noun, n.strip = "evaluations", []
+        if len(n.key) <= 2:  # the run: keep its own state unless every search has finished
+            n.status = status if status != "done" or n.done >= n.total else "running"
+            n.left = max((k.left for k in kids), default=0.0)  # the searches run side by side: the longest decides
+
+    visit(node)
+    regroup(node)
+
+
+def search_last(records: list[dict]) -> float | None:
+    """When the search's last evaluation ended (seconds since the epoch), or None."""
+    try:
+        return time.mktime(time.strptime(str(records[-1].get("finished")), "%Y-%m-%d %H:%M:%S")) if records else None
+    except ValueError:
+        return None
+
+
+def search_pace(records: list[dict]) -> float | None:
+    """Wall-clock seconds per evaluation of one search so far (evaluations inside it overlap, so this is not their
+    summed cost), or None with fewer than two finished evaluations."""
+    stamps = []
+    for record in records:
+        try:
+            stamps.append(time.mktime(time.strptime(str(record.get("finished")), "%Y-%m-%d %H:%M:%S")))
+        except ValueError:
+            continue
+    if len(stamps) < 2 or max(stamps) <= min(stamps):
+        return None
+    return (max(stamps) - min(stamps)) / (len(stamps) - 1)
 
 
 # --------------------------------------------------------------------------- the controlled-overlap study
@@ -436,7 +743,7 @@ def controlled(plan: dict, done: int, grid: dict[str, list[str]]) -> qm.RunModel
                 units.append(qm.Unit((seed, mu, fraction), index < done))
                 index += 1
     family = qm.Family(
-        "instances", "instances", "one generated LFR-derived graph with planted overlap and one HOC run on it",
+        "instances", "instances", "one generated LFR-derived graph with planted overlap and one Hedonic run on it",
         [seed_dim, mu_dim, frac_dim], units, "graph seed > mixing mu > overlap fraction",
         notes=[f"{plan.get('groups')} independent (graph seed, mu) groups run {plan.get('workers')} side by side; "
                "the study keeps only a count while it runs, so which instances are done is shown in this order"],
@@ -460,6 +767,16 @@ def params_label(params: dict) -> str:
         if key in params:
             return f"{word} {params[key]:g}" if isinstance(params[key], float) else f"{word} {params[key]}"
     return ", ".join(f"{k}={v}" for k, v in params.items() if k != "threads") or "published setting"
+
+
+def search_budget(plan: dict, method: str) -> tuple[int, float]:
+    """The settings (0: unbounded) and seconds (0: unbounded) one search of ``method`` may spend on a pair: its
+    ``--method-budget`` when it has one, else the run's ``--max-evals`` and ``--max-minutes`` (``baseline_run.budget_of``)."""
+    evals, minutes = (plan.get("method_budgets") or {}).get(method, (plan.get("max_evals") or 0, plan.get("max_minutes") or 0))
+    evals = int(evals or 0)
+    if method in SEARCH_CAP:
+        evals = min(evals, SEARCH_CAP[method]) if evals else SEARCH_CAP[method]
+    return evals, float(minutes or 0) * 60
 
 
 def read_ledger(folder: Path, target: str, method: str) -> list[dict]:
@@ -491,7 +808,7 @@ def baselines(plan: dict, searches: list[dict], results: dict[str, dict]) -> qm.
     setting cost on this pair (its own ledger); the methods of a pair run side by side, so each unfinished search is
     charged its share of the time (the pair waits for the longest, not for the sum)."""
     folder = Path(plan["output"])
-    budget, workers = int(plan.get("max_evals") or 8), max(1, int(plan.get("workers") or 0) or 8)
+    workers = max(1, int(plan.get("workers") or 0) or 8)
     pair_dim = qm.Dim("pair", "pairs", about="a network with one cover; the settings are calibrated on, and used for, that pair")
     method_dim = qm.Dim("method", "methods", about="a baseline; its parameters are chosen on G[S] alone, by the rule its row names")
     ledgers = {(s["network"], s["method"]): read_ledger(folder, s["network"], s["method"]) for s in searches}
@@ -517,7 +834,8 @@ def baselines(plan: dict, searches: list[dict], results: dict[str, dict]) -> qm.
                 note += " · not bracketed"
         else:
             tried = len(settings_of(ledgers[(s["network"], s["method"])]))
-            note = f"{tried} of ≤{budget} settings tried" if tried else ""
+            cap = search_budget(plan, s["method"])[0]
+            note = (f"{tried} of ≤{cap} settings tried" if cap else f"{tried} settings tried") if tried else ""
         units.append(qm.Unit((pair_label(s["network"]), method_label(s["method"])), s["key"] in results,
                              res.get("seconds") if res else None, note, False,
                              (res.get("seconds") if res else None)))
@@ -533,8 +851,13 @@ def baselines(plan: dict, searches: list[dict], results: dict[str, dict]) -> qm.
             if not measured:
                 return None, ""
             each = statistics.fmean(measured)  # the same method on another pair: a rough guide
-        left = max(0, SEARCH_CAP.get(method, budget) - len(settings_of(ledgers[(target, method)])))
-        return left * each / share.get(target, 1), "estimate"
+        cap, seconds = search_budget(plan, method)
+        groups = settings_of(ledgers[(target, method)])
+        left = max(0, (cap or 8) - len(groups)) * each
+        if seconds:  # the search stops starting settings once its time budget is spent
+            spent = sum(r.get("detect_seconds", 0.0) + r.get("score_seconds", 0.0) for g in groups.values() for r in g)
+            left = min(left, max(0.0, seconds - spent))
+        return left / share.get(target, 1), "estimate"
 
     family = qm.Family(
         "calibrations", "calibrations", "the search that sets one baseline's parameters on one pair, scored without the ground truth",
@@ -585,12 +908,12 @@ def decorate_baselines(node: qm.Node, plan: dict, results: dict[str, dict]) -> N
                 row.unknown = 1
             row.basis = "" if complete else "estimate"
             row.took = sum(r.get("detect_seconds", 0.0) + r.get("score_seconds", 0.0) for r in group) if complete else 0.0
-            if complete and group[0].get("status") in ("timeout", "failed", "unavailable"):
-                row.label += f"  ({group[0].get('status')})"
+            if complete and group[0].get("status") in ("timeout", "memory", "failed", "unavailable"):
+                row.label += f"  ({qs.status_text(group[0].get('status'))})"
             star = chosen and all(params.get(k) == v for k, v in chosen.items() if k in params)
             if scores:
                 row.label += f"  score {statistics.fmean(scores):.4f}" + ("  ★ chosen" if star and res else "")
-            elif group[0].get("status") in ("timeout", "failed", "unavailable"):
+            elif group[0].get("status") in ("timeout", "memory", "failed", "unavailable"):
                 row.label += "  no score"
             lines = [f"setting {index}: {', '.join(f'{k}={v}' for k, v in params.items())}"]
             for rec in group:
@@ -613,7 +936,7 @@ def decorate_baselines(node: qm.Node, plan: dict, results: dict[str, dict]) -> N
             if best:
                 n.detail.append(f"best by the criterion: {params_label(next(iter(groups[best[1]]))['params'])}")
         if not res and method not in FIXED_METHODS:
-            cap = SEARCH_CAP.get(method) or int(plan.get("max_evals") or 0)
+            cap = search_budget(plan, method)[0]
             more = max(0, cap - len(groups)) if cap else 0
             if more:  # the settings the search may still try: they keep the method's total honest, and carry its ETA
                 rest = qm.Node(key=n.key + ("more",), label=f"up to {more} more settings", noun="settings", depth=n.depth + 1,

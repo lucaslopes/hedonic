@@ -130,7 +130,8 @@ class TestRun(unittest.TestCase):
             plan = plan_for(tmp)
             loader = Loader()
             self.assertEqual(self.run_plan(plan, loader), 0)
-            self.assertEqual(loader.targets, ["amazon"] * 5 + ["dblp:top5000"] * 5)  # each method loads each pair, in a child
+            # each searched method loads each pair, in a child; CoDeSEG and NcGame take the authors' setting and load nothing
+            self.assertEqual(loader.targets, ["amazon"] * 3 + ["dblp:top5000"] * 3)
             data = br.read_tuned(plan)
             self.assertTrue(data["complete"])
             self.assertFalse(data["uses_ground_truth"])
@@ -146,6 +147,18 @@ class TestRun(unittest.TestCase):
             again = Loader()
             self.assertEqual(self.run_plan(plan, again), 0)
             self.assertEqual(again.targets, [])  # everything is recorded: no graph is loaded
+
+    def test_a_fixed_setting_loads_a_graph_only_for_a_sensitivity_check(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            loader = Loader()
+            self.assertEqual(self.run_plan(plan_for(tmp, "--methods", "codeseg,ncgame,ego_splitting"), loader), 0)
+            self.assertEqual(loader.targets, [])
+            data = br.read_tuned(plan_for(tmp, "--methods", "codeseg,ncgame,ego_splitting"))
+            self.assertEqual(data["searches"]["codeseg/amazon"]["status"], "fixed")
+            self.assertEqual(data["settings"]["codeseg"]["amazon"], {"tau": 0.3, "alpha": 1.0, "iterations": 10})
+            loader = Loader()
+            self.run_plan(plan_for(tmp + "/s", "--methods", "codeseg", "--sensitivity"), loader)
+            self.assertEqual(loader.targets, ["amazon", "dblp:top5000"])
 
     def test_a_run_goes_method_by_method_and_the_pairs_of_a_method_may_overlap(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -254,6 +267,27 @@ class TestAdoptAndTransfer(unittest.TestCase):
                 br.run_calibration(plan)
             self.assertLessEqual(len(br.read_tuned(plan)["searches"]["angel/amazon"]["candidates"]), 3)
 
+    def test_a_search_recorded_under_an_earlier_rule_is_searched_again_and_not_adopted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source, plan = Path(tmp) / "old", plan_for(str(Path(tmp) / "new"))
+            plan["output"].mkdir(parents=True)
+            old = {"status": "calibrated", "params": {"threshold": 0.2, "min_community_size": 3},
+                   "runner_params": {"threshold": 0.2, "min_community_size": 3}, "network": "amazon"}  # no search_version: ascending
+            fixed = {"status": "fixed", "params": {}, "runner_params": {}, "network": "amazon"}
+            data = {"protocol": br.PROTOCOL, "criterion": bc.CRITERION, "uses_ground_truth": False, "complete": True,
+                    "searches": {"angel/amazon": old, "codeseg/amazon": fixed}}
+            for folder in (source, plan["output"]):
+                folder.mkdir(exist_ok=True)
+                (folder / br.TUNED_NAME).write_text(json.dumps(data))
+            self.assertEqual(br.recorded(plan), {"codeseg/amazon"})  # ANGEL's is searched again; a method whose rule
+            plan["adopt_from"] = [str(source)]                       # did not change keeps its record
+            self.assertNotIn("angel/amazon", br.adoptable(plan)[str(source)])
+            with patch.object(bc, "load_context", Loader()), redirect_stdout(io.StringIO()):
+                br.run_calibration(plan)
+            entry = br.read_tuned(plan)["searches"]["angel/amazon"]
+            self.assertEqual(entry["search_version"], bc.SEARCH_VERSIONS["angel"])
+            self.assertEqual(entry["candidates"][0]["params"]["threshold"], max(bc.ANGEL_THRESHOLDS))
+
     def test_a_transferred_pair_is_not_searched_and_its_k_is_scaled(self):
         with tempfile.TemporaryDirectory() as tmp:
             plan = br.resolve(["--networks", "dblp:top5000,amazon:top5000,dblp:all", "--methods", "codeseg,bigclam,angel",
@@ -298,6 +332,32 @@ class TestAdoptAndTransfer(unittest.TestCase):
             self.assertEqual(entry["status"], "transferred")
             self.assertEqual(entry["transferred_from"], "dblp:top5000")
             self.assertEqual(entry["failed_search"]["status"], "failed")  # the search that failed is kept beside it
+
+    def test_a_search_declared_out_of_memory_loads_nothing_counts_as_done_and_is_never_transferred(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            loader = Loader()
+            argv = ["--networks", "dblp:top5000,amazon:all", "--methods", "clique_percolation", "--transfer-missing",
+                    "--out-of-memory", "clique_percolation@amazon:all", "--alone", "amazon:all", "--output-dir", tmp]
+            plan = br.resolve(argv)
+            self.assertEqual(br.resolve(br.launch_argv(plan))["out_of_memory"], plan["out_of_memory"])
+            self.assertEqual(br.resolve(br.launch_argv(plan))["alone"], ["amazon:all"])
+            with patch.object(bc, "load_context", loader), redirect_stdout(io.StringIO()):
+                self.assertEqual(br.run_calibration(plan), 0)  # complete: the declared search is recorded
+            self.assertEqual(loader.targets, ["dblp:top5000"])  # amazon:all was never loaded
+            data = br.read_tuned(plan)
+            entry = data["searches"]["clique_percolation/amazon:all"]
+            self.assertEqual(entry["status"], br.OUT_OF_MEMORY)
+            self.assertIsNone(entry["params"])
+            self.assertNotIn("amazon:all", data["settings"]["clique_percolation"])  # no setting, none transferred
+            self.assertEqual(br.state_of(plan), "complete")
+            with patch.dict("os.environ", {"HEDONIC_RERUN_MEMORY": "1"}):  # --rerun-memory: searched again
+                self.assertEqual(br.state_of(plan), "partial")
+            for bad in (["--out-of-memory", "clique_percolation@youtube:all"], ["--out-of-memory", "angel@amazon:all"],
+                        ["--alone", "youtube:all"], ["--out-of-memory", "clique_percolation@amazon:all",
+                                                     "--transfer", "amazon:all"]):
+                with self.assertRaises(ValueError):
+                    br.resolve(["--networks", "dblp:top5000,amazon:all", "--methods", "clique_percolation",
+                                "--output-dir", tmp, *bad])
 
     def test_finished_searches_are_adopted_with_their_ledgers_and_the_source_is_untouched(self):
         with tempfile.TemporaryDirectory() as earlier, tempfile.TemporaryDirectory() as tmp:
@@ -396,7 +456,7 @@ class TestReplicas(unittest.TestCase):
 
 class TestTuned(unittest.TestCase):
     def files(self, tmp: str) -> tuple[Path, Path]:
-        hoc = Path(tmp) / "hoc_tuned.json"
+        hoc = Path(tmp) / "hedonic_tuned.json"
         hoc.write_text(json.dumps({"complete": True, "settings": {"hedonic": {"dblp:top5000": {
             "max_memberships": 9, "absolute_resolution": 0.5}}}}))
         base = Path(tmp) / "baseline_tuned.json"
@@ -525,7 +585,47 @@ class TestSingleRunTree(unittest.TestCase):
             self.assertGreaterEqual(root.children[0].total, 2)  # the two methods, and the settings a search may try
 
 
+    def test_a_benchmark_run_without_its_name_in_the_recorded_command_still_gets_the_tree(self):
+        """The registry records ``hedonic run exp ...`` without ``--name`` (the name is the entry's own); the planner
+        refuses a nameless benchmark run, so the tree must be read with the entry's name or the viewer falls back to
+        its plain panel."""
+        from hedonic.experiments.overlapping import runqueue
+
+        with tempfile.TemporaryDirectory() as tmp:
+            command = (f"hedonic run exp --networks dblp:top5k --methods hedonic --nodes 0 --seeds 0,1 --preset screened "
+                       f"--threads 1 --timeout 60 --output-dir {tmp} --shared-folder")
+            runqueue._DATA_CACHE.clear()
+            root = runqueue.single_tree({"name": "timing-x", "command": command}, {})
+            self.assertEqual(root.label, "run timing-x")
+            self.assertIn("--name timing-x", root.detail[1])
+            self.assertEqual(root.children[0].total, 2)  # one network, one method, two seeds
+
+
 class TestUnitProgress(unittest.TestCase):
+    def test_a_method_budget_sets_the_settings_counted_and_bounds_the_estimate(self):
+        from hedonic.experiments.overlapping import queuebuild as qb
+        from hedonic.experiments.overlapping import queuemodel as qm
+
+        with tempfile.TemporaryDirectory() as tmp:
+            plan = br.resolve(["--networks", "dblp:top5000", "--methods", "angel", "--output-dir", tmp, "--max-evals", "8",
+                               "--method-budget", "angel=3:60"])
+            ledger = Path(tmp) / "ledger" / "dblp_top5000"
+            ledger.mkdir(parents=True)
+            row = {"method": "angel", "params": {"threshold": 0.2, "min_community_size": 3}, "replica": 0,
+                   "status": "completed", "score": -2.0, "detect_seconds": 1800.0, "score_seconds": 0.0}
+            (ledger / "evals-angel.jsonl").write_text(json.dumps(row))
+            todo = br.searches(plan)
+            model = qb.baselines(plan, todo, {})
+            unit = model.families[0].units[0]
+            self.assertEqual(unit.note, "1 of ≤3 settings tried")  # the method's 3, not the run's 8
+            # two settings left at 30 minutes each, but the search starts none after its 60 minutes: 30 minutes remain
+            self.assertEqual(model.families[0].cost(unit), (1800.0, "estimate"))
+            node = qm.run_node(1, "t", "", "running", model, (0, 1, "calibrations"))
+            qb.decorate_baselines(node, plan, {})
+            method = node.children[0].children[0]
+            self.assertEqual((method.done, method.total), (1, 3))
+            self.assertIn("up to 2 more settings", [c.label for c in method.children])
+
     @patch.dict(bc.REPLICATION, REPLICAS_POLICY)
     def test_a_search_under_way_fills_its_bar_by_settings_tried(self):
         from hedonic.experiments.overlapping import queuebuild as qb

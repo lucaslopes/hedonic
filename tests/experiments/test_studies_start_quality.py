@@ -21,7 +21,7 @@ from hedonic.experiments.overlapping import robustness as rb
 from hedonic.experiments.overlapping import start_quality as sq
 from hedonic.experiments.resources import config_path
 
-SHIPPED = "start-quality-hoc-local"  # the shipped config, resolved by name through resources.config_path
+SHIPPED = "start-quality-hedonic"  # the shipped config, resolved by name through resources.config_path
 # Two overlapping cliques: A = {0,1,2,3} and B = {3,4,5,6,7}; vertex 3 is in both.
 GT = [[0, 1, 2, 3], [3, 4, 5, 6, 7]]
 N = 8
@@ -210,6 +210,33 @@ class TestRandomLevel(unittest.TestCase):
         self.assertTrue(0.0 <= record["final_symmetric_f1"] <= 1.0)
         self.assertLess(record["start_communities"], labels)  # the undrawn label is an empty community
 
+    def test_no_cap_starts_from_the_whole_reference_and_runs(self):
+        """cap -1 (no cap): level 0 is the reference itself, never a projection, and the detector runs uncapped."""
+        cover = [[0, 1, 2], [2, 3, 4], [2, 5, 6], [6, 7, 0]]  # vertex 2 is in three communities
+        prepared = SimpleNamespace(dataset=SimpleNamespace(graph=tiny_graph(), cover=cover))
+        job = gs.Job("tiny", "top5000", prepared, None)
+        record = sq.run_condition(job, {"cap": -1, "gamma": 0.1}, 0, 0, "k", "local")
+        self.assertEqual(record["cap"], -1)
+        self.assertEqual(record["start_symmetric_f1"], 1.0)  # the exact reference
+        self.assertTrue(0.0 <= record["final_symmetric_f1"] <= 1.0)
+
+    def test_the_reference_cap_is_the_largest_reference_multiplicity_and_rides_along_in_the_key_and_argv(self):
+        """--cap reference (leveraging the ground truth): the cap is read from the loaded reference, the key names the
+        source, and a resume rebuilds the same plan."""
+        cover = [[0, 1, 2], [2, 3, 4], [2, 5, 6], [6, 7, 0]]  # vertex 2 is in three communities
+        prepared = SimpleNamespace(dataset=SimpleNamespace(graph=tiny_graph(), cover=cover))
+        job = gs.Job("tiny", "top5000", prepared, None)
+        setting = sq.with_cap({"cap": -1, "gamma": 0.1, "source": "test"}, "reference")
+        self.assertEqual(sq.setting_cap(job, setting), 3)
+        record = sq.run_condition(job, setting, 0, 0, "k", "local")
+        self.assertEqual((record["cap"], record["cap_source"]), (3, "reference"))
+        self.assertLessEqual(record["final_max_memberships"], 3)
+        self.assertIn("|cap=reference|", sq.condition_key("tiny", 0, 0, setting, "local"))
+        self.assertEqual(sq.with_cap({"cap": 4}, "tuned"), {"cap": 4})
+        plan = {"networks": ["tiny"], "phase": "local", "seeds": [0], "levels": [0], "output": "/x", "workers": 1,
+                "settings": {"tiny": setting}}
+        self.assertEqual(sq.launch_argv(plan)[-2:], ["--cap", "reference"])
+
 
 class TestResume(unittest.TestCase):
     def test_rerun_skips_recorded_conditions_and_extends_by_new_ones(self):
@@ -277,7 +304,9 @@ class TestPlanAndConfig(unittest.TestCase):
     def test_the_shipped_config_resolves_by_name_path_or_prefixed_path(self):
         shipped = config_path(SHIPPED)
         self.assertTrue(shipped.is_file())
-        for spelling in (SHIPPED, f"configs/{SHIPPED}.toml", str(shipped)):
+        # The name it had before the method's rename (a queue or a registered run may still give it) is the same file.
+        for spelling in (SHIPPED, f"configs/{SHIPPED}.toml", str(shipped), "start-quality-hoc-local",
+                         "configs/start-quality-hoc-local.toml"):
             plan = sq.resolve(["--config", spelling])
             self.assertEqual(plan["config"], str(shipped.resolve()))
             self.assertEqual(len(plan["levels"]), 9)
@@ -363,7 +392,7 @@ class TestPhase(unittest.TestCase):
     def test_phase_defaults_to_local_with_the_hedonic_settings(self):
         plan = sq.resolve(["--networks", "dblp", "--seeds", "0"])
         self.assertEqual(plan["phase"], "local")
-        self.assertEqual(plan["settings"]["dblp"]["cap"], qs.HOC_TUNED["hedonic"]["dblp"]["max_memberships"])
+        self.assertEqual(plan["settings"]["dblp"]["cap"], qs.HEDONIC_TUNED["hedonic"]["dblp"]["max_memberships"])
         self.assertFalse(hasattr(sq, "MULTILEVEL_TUNED"))  # the 1.x multilevel settings are gone with the phase
 
     def test_local_takes_the_hedonic_settings_from_the_config_or_the_flag(self):
@@ -374,7 +403,7 @@ class TestPhase(unittest.TestCase):
                                             "livejournal:top5000", "dblp", "amazon", "youtube"])
         self.assertEqual(plan["seeds"], list(range(10)))
         self.assertEqual(len(sq.conditions(plan)), 720)
-        local = qs.HOC_TUNED["hedonic"]
+        local = qs.HEDONIC_TUNED["hedonic"]
         self.assertEqual(plan["settings"]["dblp"]["cap"], local["dblp"]["max_memberships"])
         self.assertAlmostEqual(plan["settings"]["dblp"]["gamma"], local["dblp"]["absolute_resolution"])
         self.assertEqual(plan["settings"]["amazon"]["cap"], local["amazon"]["max_memberships"])
@@ -414,7 +443,7 @@ class TestPhase(unittest.TestCase):
             local = plan_for(folder, levels=[0.0], seeds=[0])
             key = sq.conditions(local)[0]["key"]
             self.assertEqual(key, f"tiny|0|0|cap=2|gamma=0.5|phase=local|code={sq.code_identity()}")
-            self.assertTrue(sq.code_identity().startswith(f"hedonic-{runtime.release_series()}+core-"))
+            self.assertTrue(sq.code_identity().startswith(f"hedonic-{runtime.RESULTS_SERIES}+core-"))
             self.assertNotIn("/", sq.code_identity())  # no path ever enters a key
             with patch.object(sq.v3, "_detector_worker", side_effect=original) as worker:
                 sq.run_study(local, loader=lambda _: job, emit=lambda _: None)

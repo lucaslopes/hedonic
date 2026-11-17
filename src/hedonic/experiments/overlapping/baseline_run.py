@@ -5,7 +5,7 @@ module runs them for **every method on every network/cover pair** of a list, the
 Hedonic, so a queue can have it as a step before the benchmark:
 
     hedonic run calibrate-baselines --networks dblp:top5k,amazon:all --name baseline-calibration
-    hedonic run exp --config CONFIG --tuned hoc_tuned.json,baseline-calibration/baseline_tuned.json
+    hedonic run exp --config CONFIG --tuned hedonic_tuned.json,baseline-calibration/baseline_tuned.json
 
 For each pair the graph ``G[S]`` (the subgraph induced by the vertices the cover contains) is loaded once, and each method is
 calibrated on it by its own function (searched parameters: CliquePerc ``k``, ANGEL ``phi``, BigCLAM and NEO-K-Means ``K``;
@@ -34,6 +34,7 @@ from typing import Any, Callable
 
 from hedonic.experiments.config import RUNS_ROOT, expand_path
 from hedonic.experiments.overlapping import baseline_calibration as bc
+from hedonic.experiments.overlapping import memwatch
 from hedonic.experiments.overlapping import replication
 from hedonic.experiments.overlapping import parallel
 from hedonic.experiments.overlapping import quickstart as qs
@@ -43,6 +44,7 @@ PROTOCOL = bc.PROTOCOL
 TUNED_NAME = "baseline_tuned.json"
 DEFAULT_NAME = "baseline-calibration"
 DEFAULT_NETWORKS = "dblp:top5k,amazon:top5k"
+OUT_OF_MEMORY = "out_of_memory"  # a search every evaluation of which the memory watchdog stopped, or one declared so
 
 Progress = Callable[[dict[str, Any]], None]
 
@@ -72,6 +74,9 @@ def build_parser(prog: str = "hedonic run calibrate-baselines") -> argparse.Argu
                         help="single-core minutes per method and pair (0 = no cap)")
     parser.add_argument("--eval-timeout-minutes", type=float, default=60.0, metavar="M",
                         help="one detector run is killed after M minutes and recorded as a failed probe (default 60)")
+    parser.add_argument("--limit-seconds", type=float, default=None, metavar="S",
+                        help="a queue's time limit for one detector run: lowers --eval-timeout-minutes (each evaluation "
+                             "on its own, never a search's total); an evaluation it stopped reruns under a larger limit")
     parser.add_argument("--replicates", type=int, default=bc.DEFAULT_REPLICATES, metavar="R",
                         help="independent runs averaged per setting for the methods whose runs are replicas "
                              f"(BigCLAM, NEO-K-Means, FOX; default {bc.DEFAULT_REPLICATES}; 1 = one run)")
@@ -85,6 +90,12 @@ def build_parser(prog: str = "hedonic run calibrate-baselines") -> argparse.Argu
     parser.add_argument("--transfer-missing", action="store_true",
                         help="a search that ended without a setting (every probe failed or timed out) also takes a "
                              "transferred setting; a method whose runtime is unavailable never does")
+    parser.add_argument("--alone", default="", metavar="PAIRS",
+                        help="pairs too large to share the machine: each is calibrated with no other pair beside it "
+                             "(the others still run side by side, before or after it); policy, not part of any record")
+    parser.add_argument("--out-of-memory", default="", metavar="METHOD@PAIR,...",
+                        help="searches recorded as out of memory without loading the pair or running anything (status "
+                             "out_of_memory, citing the evidence); never transferred; --rerun-memory searches them again")
     parser.add_argument("--adopt-from", default="", metavar="DIR,...",
                         help="earlier calibration folders: the searches of this plan they finished are copied in (with "
                              "their ledgers, so a search they left unfinished resumes from its evaluations); copied, never "
@@ -152,6 +163,8 @@ def resolve(argv: list[str], prog: str = "hedonic run calibrate-baselines") -> d
         raise ValueError("nothing to calibrate")
     if args.max_evals < 0 or args.max_minutes < 0 or args.eval_timeout_minutes <= 0:
         raise ValueError("--max-evals and --max-minutes cannot be negative and --eval-timeout-minutes must be positive")
+    if args.limit_seconds is not None and not args.limit_seconds > 0:
+        raise ValueError("--limit-seconds must be a positive number of seconds")
     if args.replicates < 1:
         raise ValueError("--replicates must be at least 1")
     if args.workers is not None and args.workers < 1:
@@ -163,16 +176,28 @@ def resolve(argv: list[str], prog: str = "hedonic run calibrate-baselines") -> d
         raise ValueError(f"--transfer names pair(s) not in --networks: {', '.join(stray)}")
     if transfer and len(transfer) == len(networks):
         raise ValueError("--transfer names every pair: there is no calibrated pair to transfer from")
+    alone = qs.parse_targets(args.alone) if args.alone.strip() else []
+    stray = [t for t in alone if t not in networks]
+    if stray:
+        raise ValueError(f"--alone names pair(s) not in --networks: {', '.join(stray)}")
+    out_of_memory = memwatch.parse_declared(args.out_of_memory, qs.pair_key)
+    stray = sorted(f"{m}@{t}" for m, t in out_of_memory if m not in methods or t not in networks)
+    if stray:
+        raise ValueError(f"--out-of-memory names search(es) not in --methods x --networks: {', '.join(stray)}")
+    clash = sorted(f"{m}@{t}" for m, t in out_of_memory if t in transfer)
+    if clash:
+        raise ValueError(f"--out-of-memory and --transfer both name {', '.join(clash)}: a pair out of memory is not "
+                         "transferred")
     adopt = [expand_path(d.strip()).resolve() for d in args.adopt_from.split(",") if d.strip()]
     name = qs.parse_name(args.name or DEFAULT_NAME)
     root = Path(userconfig.defaults().get("output_dir") or RUNS_ROOT)
     output = expand_path(args.output_dir).resolve() if args.output_dir else expand_path(root / name).resolve()
     return {"networks": networks, "methods": methods, "network_root": args.network_root, "seed": int(args.seed),
             "max_evals": int(args.max_evals), "max_minutes": float(args.max_minutes),
-            "eval_timeout_minutes": float(args.eval_timeout_minutes), "replicates": int(args.replicates), "workers": args.workers,
+            "eval_timeout_minutes": float(args.eval_timeout_minutes), "limit": args.limit_seconds, "replicates": int(args.replicates), "workers": args.workers,
             "sensitivity": bool(args.sensitivity), "runtime_manifest": args.runtime_manifest,
             "method_budgets": method_budgets, "transfer": transfer, "transfer_missing": bool(args.transfer_missing),
-            "adopt_from": adopt, "name": name, "output": output, "overwrite": bool(args.overwrite), "dry_run": bool(args.dry_run)}
+            "alone": alone, "out_of_memory": out_of_memory, "adopt_from": adopt, "name": name, "output": output, "overwrite": bool(args.overwrite), "dry_run": bool(args.dry_run)}
 
 
 def parse_method_budgets(text: str, methods: list[str]) -> dict[str, tuple[int, float]]:
@@ -200,8 +225,10 @@ def parse_method_budgets(text: str, methods: list[str]) -> dict[str, tuple[int, 
 
 def budget_of(plan: dict[str, Any], method: str | None = None) -> bc.Budget:
     evals, minutes = (plan.get("method_budgets") or {}).get(method, (plan["max_evals"], plan["max_minutes"]))
+    from hedonic.experiments.overlapping import limits
+
     return bc.Budget(max_evals=evals or None, max_seconds=minutes * 60 or None,
-                     eval_timeout=plan["eval_timeout_minutes"] * 60)
+                     eval_timeout=limits.effective(plan["eval_timeout_minutes"] * 60, plan.get("limit")))
 
 
 def searches(plan: dict[str, Any]) -> list[dict[str, Any]]:
@@ -246,7 +273,11 @@ def plan_lines(plan: dict[str, Any]) -> list[str]:
                      "the nearest calibrated pair (same network first, else nearest density; K scaled by n), recorded "
                      "as transferred")
     if plan.get("transfer_missing"):
-        lines.append("  transfer also every search that ends without a setting (not an unavailable runtime)")
+        lines.append("  transfer also every search that ends without a setting (not an unavailable runtime, not out of memory)")
+    if plan.get("alone"):
+        lines.append(f"  alone    {', '.join(plan['alone'])}: calibrated one at a time, with no other pair beside it")
+    for (method, target), why in (plan.get("out_of_memory") or {}).items():
+        lines.append(f"  memory   {method} on {target}: recorded out of memory, not run ({why[:120]}...)")
     for source, keys in adoptable(plan).items():
         lines.append(f"  adopt    {len(keys)} finished searches from {source} (copied with its ledger at the start)")
     for method in plan["methods"]:
@@ -268,8 +299,18 @@ def read_tuned(plan: dict[str, Any]) -> dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
+def current(found: dict[str, Any]) -> dict[str, Any]:
+    """The searches of a result file recorded under their method's present search rule (``bc.SEARCH_VERSIONS``): one
+    recorded under an earlier rule is searched again, reusing its ledger. With ``--rerun-memory`` a search recorded out
+    of memory is not current either."""
+    rerun = memwatch.rerun_requested()  # --rerun-memory: a search that ended out of memory is searched again
+    return {k: v for k, v in found.items()
+            if isinstance(v, dict) and v.get("search_version") == bc.SEARCH_VERSIONS.get(k.split("/", 1)[0])
+            and not (rerun and v.get("status") == OUT_OF_MEMORY)}
+
+
 def recorded(plan: dict[str, Any]) -> set[str]:
-    return set((read_tuned(plan).get("searches") or {}))
+    return set(current(read_tuned(plan).get("searches") or {}))
 
 
 def state_of(plan: dict[str, Any]) -> str:
@@ -287,7 +328,7 @@ def state_of(plan: dict[str, Any]) -> str:
 def mark_complete(plan: dict[str, Any]) -> dict[str, Any]:
     """Set the file's ``complete`` flag for this plan (atomically) and return the file's content."""
     data = read_tuned(plan)
-    flag = {s["key"] for s in searches(plan)} <= set(data.get("searches") or {})
+    flag = {s["key"] for s in searches(plan)} <= set(current(data.get("searches") or {}))
     if data and data.get("complete") != flag:
         data["complete"] = flag
         path = plan["output"] / TUNED_NAME
@@ -302,6 +343,8 @@ def record_search(plan: dict[str, Any], search: dict[str, Any], result: bc.Calib
     """Add one finished calibration to baseline_tuned.json (atomically) and return the file's content."""
     entry = {**result.to_dict(), "network": search["network"], "graph": graph,
              "runner_params": bc.runner_params(result.method, result.params), "environment": runtime_versions(), **extra}
+    if result.method in bc.SEARCH_VERSIONS:
+        entry["search_version"] = bc.SEARCH_VERSIONS[result.method]
     data = read_tuned(plan) or {}
     data.update({"protocol": PROTOCOL, "criterion": bc.CRITERION, "uses_ground_truth": False, "environment": runtime_versions(),
                  "plan": {k: plan[k] for k in ("seed", "max_evals", "max_minutes", "eval_timeout_minutes", "replicates",
@@ -312,7 +355,7 @@ def record_search(plan: dict[str, Any], search: dict[str, Any], result: bc.Calib
         settings[search["network"]] = entry["runner_params"]
     else:
         settings.pop(search["network"], None)
-    data["complete"] = {s["key"] for s in searches(plan)} <= set(data["searches"])
+    data["complete"] = {s["key"] for s in searches(plan)} <= set(current(data["searches"]))
     write_tuned(plan, data)
     return data
 
@@ -334,7 +377,7 @@ def adoptable(plan: dict[str, Any]) -> dict[str, list[str]]:
     wanted = [s["key"] for s in searches(plan)]
     out: dict[str, list[str]] = {}
     for source in plan.get("adopt_from") or []:
-        found = read_tuned({"output": Path(source)}).get("searches") or {}
+        found = current(read_tuned({"output": Path(source)}).get("searches") or {})
         keys = [k for k in wanted if k not in mine and (found.get(k) or {}).get("status") in ADOPTABLE]
         mine |= set(keys)
         out[str(source)] = keys
@@ -370,7 +413,7 @@ def adopt(plan: dict[str, Any], emit: Callable[[str], Any] = print) -> int:
             if entry.get("runner_params") is not None:
                 data.setdefault("settings", {}).setdefault(method, {})[target] = entry["runner_params"]
             count += 1
-        data["complete"] = {s["key"] for s in searches(plan)} <= set(data.get("searches") or {})
+        data["complete"] = {s["key"] for s in searches(plan)} <= set(current(data.get("searches") or {}))
         write_tuned(plan, data)
         copied = 0
         for target in plan["networks"]:
@@ -442,6 +485,14 @@ def transferred_result(method: str, target: str, results: dict[str, Any], graph:
                                  notes=notes, replication=dict(bc.REPLICATION[method])), source)
 
 
+def declared_result(method: str, target: str, why: str) -> bc.CalibrationResult:
+    """A search declared out of memory (``--out-of-memory``): recorded with its evidence, nothing loaded or run."""
+    return bc.CalibrationResult(method, OUT_OF_MEMORY, None,
+                                "declared out of memory for this machine (--out-of-memory); not searched, no setting",
+                                None, stop_reason="out of memory (declared)", notes=[why],
+                                replication=dict(bc.REPLICATION[method]))
+
+
 def reset(plan: dict[str, Any]) -> None:
     (plan["output"] / TUNED_NAME).unlink(missing_ok=True)
     ledger = plan["output"] / "ledger"
@@ -481,8 +532,12 @@ def run_calibration(plan: dict[str, Any], *, progress: Progress = _silent, emit:
     sizes = {s_["network"]: s_.get("graph") for s_ in (read_tuned(plan).get("searches") or {}).values()}
 
     def calibrate_one(search):
-        """One method on one pair, in a forked child that loads the pair's graph (an unloaded graph costs nothing to hold)."""
+        """One method on one pair, in a forked child that loads the pair's graph (an unloaded graph costs nothing to hold).
+        A fixed-protocol method without a sensitivity check runs nothing, so its graph is not loaded: the record is the
+        authors' setting, the same on every pair."""
         target = search["network"]
+        if search["method"] in bc.FIXED_METHODS and not plan["sensitivity"]:
+            return bc.calibrate(search["method"], None), sizes.get(target) or {}
         ctx = bc.load_context(target, network_root=plan["network_root"], induce="covered", seed=plan["seed"],
                               budget=budget_of(plan, search["method"]), ledger_dir=out / "ledger" / target.replace(":", "_"), runtime=runtime)
         bc.with_replicates(ctx, plan["replicates"])
@@ -505,21 +560,30 @@ def run_calibration(plan: dict[str, Any], *, progress: Progress = _silent, emit:
         return {"n": ctx.graph.vcount(), "m": ctx.graph.ecount(), "sha256": ctx.fingerprint()}
 
     transfer = set(plan.get("transfer") or [])
+    declared = plan.get("out_of_memory") or {}
     for method in plan["methods"]:
         pending = [s_ for s_ in todo if s_["method"] == method and s_["key"] not in done]
+        for search in [s_ for s_ in pending if (method, s_["network"]) in declared]:
+            result = declared_result(method, search["network"], declared[method, search["network"]])
+            record_search(plan, search, result, sizes.get(search["network"]) or {})
+            finished += 1
+            emit(f"  {qs.snap.public_target(search['network']):<22} {result.status:<11} not run: {result.stop_reason}")
+            progress({"type": "unit", "done": finished, "total": len(todo), "key": search["key"]})
+        pending = [s_ for s_ in pending if (method, s_["network"]) not in declared]
         moved = [s_ for s_ in pending if s_["network"] in transfer and method not in bc.FIXED_METHODS]
         pending = [s_ for s_ in pending if s_ not in moved]
         finished += _run_method(plan, method, pending, sizes, workers, calibrate_one, finished, len(todo), progress, emit)
         if plan.get("transfer_missing"):
-            results = read_tuned(plan).get("searches") or {}
+            results = current(read_tuned(plan).get("searches") or {})
             moved += [s_ for s_ in todo if s_["method"] == method and s_ not in moved
                       and (results.get(s_["key"]) or {}).get("status") == "failed"
                       and (results.get(s_["key"]) or {}).get("stop_reason") != "no transfer source"]
         unknown = [s_ for s_ in moved if not sizes.get(s_["network"])]
-        for index, graph in parallel.run_forked(size_of, unknown, workers, admit=_memory_allows) if unknown else []:
+        for index, graph in (parallel.run_forked(size_of, unknown, workers, admit=_memory_allows, alone=_alone(plan))
+                             if unknown else []):
             sizes[unknown[index]["network"]] = graph
         for search in moved:
-            results = read_tuned(plan).get("searches") or {}
+            results = current(read_tuned(plan).get("searches") or {})
             earlier = results.get(search["key"])
             why = ("its search ended without a setting" if earlier else "--transfer: this pair is not searched")
             result, source = transferred_result(method, search["network"], results, sizes.get(search["network"]), why)
@@ -534,7 +598,8 @@ def run_calibration(plan: dict[str, Any], *, progress: Progress = _silent, emit:
                  f"{json.dumps(bc.runner_params(method, result.params))}  [from {source or 'nowhere'}]")
             progress({"type": "unit", "done": finished, "total": len(todo), "key": search["key"]})
     final = mark_complete(plan)
-    problems = [k for k, v in (final.get("searches") or {}).items() if v.get("status") in ("failed", "unavailable")]
+    problems = [k for k, v in (final.get("searches") or {}).items() if v.get("status") in ("failed", "unavailable",
+                                                                                          OUT_OF_MEMORY)]
     if problems:
         emit("baseline calibration: no setting for " + ", ".join(sorted(problems)) + " (the benchmark keeps its default)")
     moved_all = sorted(k for k, v in (final.get("searches") or {}).items() if v.get("status") == "transferred" and k in wanted)
@@ -543,6 +608,12 @@ def run_calibration(plan: dict[str, Any], *, progress: Progress = _silent, emit:
             f"{k} <- {final['searches'][k].get('transferred_from')}" for k in moved_all))
     emit(f"baseline calibration: {'complete' if final.get('complete') else 'NOT complete'}; wrote {out / TUNED_NAME}")
     return 0 if final.get("complete") else 1
+
+
+def _alone(plan: dict[str, Any]) -> Callable[[dict[str, Any]], bool] | None:
+    """``--alone``: whether a search (or a pair to size) runs with nothing beside it (``parallel.run_forked``)."""
+    alone = set(plan.get("alone") or [])
+    return (lambda search: search["network"] in alone) if alone else None
 
 
 def _run_method(plan, method, pending, sizes, workers, calibrate_one, finished, total, progress, emit) -> int:
@@ -555,7 +626,7 @@ def _run_method(plan, method, pending, sizes, workers, calibrate_one, finished, 
     progress({"type": "stage", "text": f"{method}: calibrating {len(pending)} pairs, {workers} at once"})
     count = 0
     for index, (result, graph) in parallel.run_forked(calibrate_one, pending, workers, admit=_memory_allows,
-                                                     stagger=START_STAGGER_SECONDS):
+                                                     stagger=START_STAGGER_SECONDS, alone=_alone(plan)):
         search = pending[index]
         sizes[search["network"]] = graph
         record_search(plan, search, result, graph)
@@ -583,12 +654,16 @@ def launch_argv(plan: dict[str, Any]) -> list[str]:
               if plan.get("method_budgets") else []),
             *(["--transfer", ",".join(plan["transfer"])] if plan.get("transfer") else []),
             *(["--transfer-missing"] if plan.get("transfer_missing") else []),
+            *(["--alone", ",".join(plan["alone"])] if plan.get("alone") else []),
+            *(["--out-of-memory", memwatch.spell_declared(plan["out_of_memory"])] if plan.get("out_of_memory") else []),
             *(["--adopt-from", ",".join(str(d) for d in plan["adopt_from"])] if plan.get("adopt_from") else []),
             "--name", plan["name"], "--output-dir", str(plan["output"])]
     if plan["network_root"]:
         argv += ["--network-root", str(plan["network_root"])]
     if plan["runtime_manifest"]:
         argv += ["--runtime-manifest", str(plan["runtime_manifest"])]
+    if plan.get("limit") is not None:
+        argv += ["--limit-seconds", f"{plan['limit']:g}"]
     return argv + (["--sensitivity"] if plan["sensitivity"] else [])
 
 
@@ -721,7 +796,7 @@ def tree(entry: dict[str, Any], prog: dict[str, Any]):
 
     plan = resolve(entry["argv"], prog="hedonic run calibrate-baselines")
     todo = searches(plan)
-    results = read_tuned(plan).get("searches") or {}
+    results = current(read_tuned(plan).get("searches") or {})
     status = rm.effective_status(entry, prog)
     model = qb.baselines(plan, todo, results)
     done = len(set(results) & {s["key"] for s in todo})
